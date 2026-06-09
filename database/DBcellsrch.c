@@ -588,6 +588,25 @@ DBTreeSrLabels(scx, mask, xMask, tpath, flags, func, cdarg)
 	if (!DBCellRead(def, TRUE, TRUE, NULL))
 	    return 0;
 
+    if (flags & TF_LABEL_REVERSE_SEARCH)
+    {
+	/* Search children first */
+	filter.tf_func = func;
+	filter.tf_arg = cdarg;
+	filter.tf_mask = mask;
+	filter.tf_xmask = xMask;
+	filter.tf_tpath = tpath;
+	filter.tf_flags = flags;
+
+	scx2 = *scx;
+	if (scx2.scx_area.r_xbot > TiPlaneRect.r_xbot) scx2.scx_area.r_xbot -= 1;
+	if (scx2.scx_area.r_ybot > TiPlaneRect.r_ybot) scx2.scx_area.r_ybot -= 1;
+	if (scx2.scx_area.r_xtop < TiPlaneRect.r_xtop) scx2.scx_area.r_xtop += 1;
+	if (scx2.scx_area.r_ytop < TiPlaneRect.r_ytop) scx2.scx_area.r_ytop += 1;
+	if (DBCellSrArea(&scx2, dbCellLabelSrFunc, (ClientData) &filter))
+	    return 1;
+    }
+
     for (lab = def->cd_labels; lab; lab = lab->lab_next)
     {
 	if (SigInterruptPending) break;
@@ -639,6 +658,8 @@ DBTreeSrLabels(scx, mask, xMask, tpath, flags, func, cdarg)
 	    if ((*func)(scx, lab, tpath, cdarg))
 		return (1);
     }
+
+    if (flags & TF_LABEL_REVERSE_SEARCH) return 0;  /* children already searched */
 
     filter.tf_func = func;
     filter.tf_arg = cdarg;
@@ -711,6 +732,16 @@ dbCellLabelSrFunc(scx, fp)
 	}
     }
 
+    /* If fp->tf_flags has TF_LABEL_REVERSE_SEARCH, then search child
+     * uses first, then the parent.  This is for display, so that if
+     * a child cell and parent cell have overlapping labels, the parent
+     * label is the one on top.
+     */
+
+    if (fp->tf_flags & TF_LABEL_REVERSE_SEARCH)
+	if (DBCellSrArea(scx, dbCellLabelSrFunc, (ClientData) fp))
+	    result = 1;
+
     /* Apply the function first to any of the labels in this def. */
 
     result = 0;
@@ -732,9 +763,11 @@ dbCellLabelSrFunc(scx, fp)
 	}
     }
 
-    /* Now visit each child use recursively */
-    if (DBCellSrArea(scx, dbCellLabelSrFunc, (ClientData) fp))
-	result = 1;
+    /* Now visit each child use recursively, if not doing a reverse search */
+
+    if (!(fp->tf_flags & TF_LABEL_REVERSE_SEARCH))
+	if (DBCellSrArea(scx, dbCellLabelSrFunc, (ClientData) fp))
+	    result = 1;
 
 cleanup:
     /* Remove the trailing pathname component from the TerminalPath */
@@ -1713,7 +1746,7 @@ dbTileMoveFunc(tile, dinfo, mvvals)
     if (IsSplit(tile))
 	type = (dinfo & TT_SIDE) ? SplitRightType(tile) : SplitLeftType(tile);
     DBNMPaintPlane(mvvals->ptarget, exact, &targetRect,
-		DBStdPaintTbl(type, mvvals->pnum),
+		(mvvals->pnum < 0) ? CIFPaintTable : DBStdPaintTbl(type, mvvals->pnum),
 		(PaintUndoInfo *)NULL);
     return 0;
 }
@@ -1806,84 +1839,48 @@ typedef struct _cellpropstruct {
  * ----------------------------------------------------------------------------
  */
 
-int dbScaleProp(name, value, cps)
+int dbScaleProp(name, proprec, cps)
     char *name;
-    char *value;
+    PropertyRecord *proprec;
     CellPropStruct *cps;
 {
-    int scalen, scaled;
-    char *newvalue, *vptr;
-    Rect r;
+    int i, scalen, scaled;
+    Point p;
 
-    if ((strlen(name) > 5) && !strncmp(name + strlen(name) - 5, "_BBOX", 5))
+    /* Only "dimension" and "plane" type properties get scaled */
+
+    if (proprec->prop_type == PROPERTY_TYPE_PLANE)
     {
-	if (sscanf(value, "%d %d %d %d", &r.r_xbot, &r.r_ybot,
-			&r.r_xtop, &r.r_ytop) == 4)
-	{
-	    /* Scale numerator held in point X value, */
-	    /* scale denominator held in point Y value */
-
-	    scalen = cps->cps_point.p_x;
-	    scaled = cps->cps_point.p_y;
-
-	    DBScalePoint(&r.r_ll, scalen, scaled);
-	    DBScalePoint(&r.r_ur, scalen, scaled);
-
-	    newvalue = (char *)mallocMagic(40);
-	    sprintf(newvalue, "%d %d %d %d", r.r_xbot, r.r_ybot,
-			r.r_xtop, r.r_ytop);
-	    DBPropPut(cps->cps_def, name, newvalue);
-	}
+	Plane *newplane;
+	newplane = DBNewPlane((ClientData)TT_SPACE);
+	DBClearPaintPlane(newplane);
+	/* Plane index is unused;  arbitrarily substitute -1 */
+	dbScalePlane(proprec->prop_value.prop_plane, newplane, -1,
+			scalen, scaled, TRUE);
+	DBFreePaintPlane(proprec->prop_value.prop_plane);
+	TiFreePlane(proprec->prop_value.prop_plane);
+	proprec->prop_value.prop_plane = newplane;
+	return 0;
     }
-    else if (!strncmp(name, "MASKHINTS_", 10))
+
+    if (proprec->prop_type != PROPERTY_TYPE_DIMENSION) return 0; 
+
+    /* Scale numerator held in point X value, */
+    /* scale denominator held in point Y value */
+    scalen = cps->cps_point.p_x;
+    scaled = cps->cps_point.p_y;
+
+    for (i = 0; i < proprec->prop_len; i += 2)
     {
-	char *vptr, *lastval;
-	int lastlen;
+	if ((i + 1) >= proprec->prop_len) break;
 
-	newvalue = (char *)NULL;
-	vptr = value;
-	while (*vptr != '\0')
-	{
-	    if (sscanf(vptr, "%d %d %d %d", &r.r_xbot, &r.r_ybot,
-			&r.r_xtop, &r.r_ytop) == 4)
-	    {
-	    	/* Scale numerator held in point X value, */
-	    	/* scale denominator held in point Y value */
-
-	    	scalen = cps->cps_point.p_x;
-	    	scaled = cps->cps_point.p_y;
-
-	    	DBScalePoint(&r.r_ll, scalen, scaled);
-	    	DBScalePoint(&r.r_ur, scalen, scaled);
-
-		lastval = newvalue;
-		lastlen = (lastval) ? strlen(lastval) : 0;
-		newvalue = mallocMagic(40 + lastlen);
-
-		if (lastval)
-		    strcpy(newvalue, lastval);
-		else
-		    *newvalue = '\0';
-
-		sprintf(newvalue + lastlen, "%s%d %d %d %d", (lastval) ? " " : "",
-			r.r_xbot, r.r_ybot, r.r_xtop, r.r_ytop);
-		if (lastval) freeMagic(lastval);
-
-		/* Parse through the four values and check if there's more */
-                while (*vptr && !isspace(*vptr)) vptr++;
-                while (*vptr && isspace(*vptr)) vptr++;
-                while (*vptr && !isspace(*vptr)) vptr++;
-                while (*vptr && isspace(*vptr)) vptr++;
-                while (*vptr && !isspace(*vptr)) vptr++;
-                while (*vptr && isspace(*vptr)) vptr++;
-                while (*vptr && !isspace(*vptr)) vptr++;
-                while (*vptr && isspace(*vptr)) vptr++;
-	    }
-	    else break;
-	}
-	if (newvalue)
-	    DBPropPut(cps->cps_def, name, newvalue);
+	p.p_x = proprec->prop_value.prop_integer[i];
+	p.p_y = proprec->prop_value.prop_integer[i + 1];
+	DBScalePoint(&p, scalen, scaled);
+	proprec->prop_value.prop_integer[i] = p.p_x;
+	proprec->prop_value.prop_integer[i + 1] = p.p_y;
     }
+
     return 0;	/* Keep enumerating through properties */
 }
 
@@ -1899,33 +1896,47 @@ int dbScaleProp(name, value, cps)
  * ----------------------------------------------------------------------------
  */
 
-int dbMoveProp(name, value, cps)
+int dbMoveProp(name, proprec, cps)
     char *name;
-    char *value;
+    PropertyRecord *proprec;
     CellPropStruct *cps;
 {
-    int origx, origy;
+    int i, origx, origy;
     char *newvalue;
-    Rect r;
+    Point p;
 
-    if (((strlen(name) > 5) && !strncmp(name + strlen(name) - 5, "_BBOX", 5))
-		|| !strncmp(name, "MASKHINTS_", 10))
+    /* Only "dimension" and "plane" type properties get scaled */
+
+    if (proprec->prop_type == PROPERTY_TYPE_PLANE)
     {
-	if (sscanf(value, "%d %d %d %d", &r.r_xbot, &r.r_ybot,
-			&r.r_xtop, &r.r_ytop) == 4)
-	{
-	    origx = cps->cps_point.p_x;
-	    origy = cps->cps_point.p_y;
+	Plane *newplane;
 
-	    DBMovePoint(&r.r_ll, origx, origy);
-	    DBMovePoint(&r.r_ur, origx, origy);
-
-	    newvalue = (char *)mallocMagic(40);
-	    sprintf(newvalue, "%d %d %d %d", r.r_xbot, r.r_ybot,
-			r.r_xtop, r.r_ytop);
-	    DBPropPut(cps->cps_def, name, newvalue);
-	}
+	newplane = DBNewPlane((ClientData) TT_SPACE);
+	DBClearPaintPlane(newplane);
+	/* Use plane index -1 to indicate use of CIFPaintTable */
+	dbMovePlane(proprec->prop_value.prop_plane, newplane, -1, origx, origy);
+        DBFreePaintPlane(proprec->prop_value.prop_plane);
+	TiFreePlane(proprec->prop_value.prop_plane);
+        proprec->prop_value.prop_plane = newplane;
+	return 0;
     }
+
+    if (proprec->prop_type != PROPERTY_TYPE_DIMENSION) return 0; 
+
+    origx = cps->cps_point.p_x;
+    origy = cps->cps_point.p_y;
+
+    for (i = 0; i < proprec->prop_len; i += 2)
+    {
+	if ((i + 1) >= proprec->prop_len) break;
+
+	p.p_x = proprec->prop_value.prop_integer[i];
+	p.p_y = proprec->prop_value.prop_integer[i + 1];
+	DBMovePoint(&p, origx, origy);
+	proprec->prop_value.prop_integer[i] = p.p_x;
+	proprec->prop_value.prop_integer[i + 1] = p.p_y;
+    }
+
     return 0;	/* Keep enumerating through properties */
 }
 

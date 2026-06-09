@@ -38,7 +38,6 @@ static char rcsid[] __attribute__ ((unused)) = "$Header: /usr/cvsroot/magic-8.0/
 #include "utils/main.h"
 #include "utils/magic.h"
 #include "utils/malloc.h"
-#include "utils/magsgtty.h"
 #include "utils/hash.h"
 #include "utils/macros.h"
 #include "textio/textio.h"
@@ -161,6 +160,8 @@ global char *MainMouseFile = NULL;
 /* information about the color display. */
 global char *MainDisplayType = NULL;
 global char *MainMonType = NULL;
+
+static bool MagicIsInitialized = FALSE;
 
 
 /* Copyright notice for the binary file. */
@@ -562,6 +563,7 @@ mainInitAfterArgs()
     SectionID sec_cifinput, sec_cifoutput;
     SectionID sec_drc, sec_extract, sec_wiring, sec_router;
     SectionID sec_plow, sec_plot, sec_mzrouter;
+    char *syspath;
 
     DBTypeInit();
     MacroInit();
@@ -576,9 +578,8 @@ mainInitAfterArgs()
 #endif
 
     /*
-     * Setup path names for system directory searches
+     * Set up path names for system directory searches
      */
-
     StrDup(&SysLibPath, MAGIC_SYS_PATH);
 
     /*
@@ -987,7 +988,8 @@ mainInitFinal()
 	    }
 	}
 
-        if (getcwd(cwd, 512) == NULL || strcmp(cwd, home) || (RCFileName[0] == '/'))
+        if (getcwd(cwd, 512) == NULL || ((home != NULL) && (strcmp(cwd, home)))
+			|| (RCFileName[0] == '/'))
 	{
 	    /* Read in the .magicrc file from the current directory, if	*/
 	    /* different from HOME.					*/
@@ -1287,12 +1289,28 @@ magicMain(argc, argv)
 {
     int rstatus;
 
-    if ((rstatus = mainInitBeforeArgs(argc, argv)) != 0) MainExit(rstatus);
-    if ((rstatus = mainDoArgs(argc, argv)) != 0) MainExit(rstatus);
-    if ((rstatus = mainInitAfterArgs()) != 0) MainExit(rstatus);
-    if ((rstatus = mainInitFinal()) != 0) MainExit(rstatus);
+    if ((rstatus = magicMainInit(argc, argv)) != 0) MainExit(rstatus);
     TxDispatch( (FILE *) NULL);
     mainFinished();
+}
+
+int
+magicMainInit(argc, argv)
+    int argc;
+    char *argv[];
+{
+    int rstatus;
+
+    if (MagicIsInitialized)
+	return 0;
+
+    if ((rstatus = mainInitBeforeArgs(argc, argv)) != 0) return rstatus;
+    if ((rstatus = mainDoArgs(argc, argv)) != 0) return rstatus;
+    if ((rstatus = mainInitAfterArgs()) != 0) return rstatus;
+    if ((rstatus = mainInitFinal()) != 0) return rstatus;
+
+    MagicIsInitialized = TRUE;
+    return 0;
 }
 
 

@@ -27,83 +27,50 @@ static char rcsid[] __attribute__ ((unused)) = "$Header: /usr/cvsroot/magic-8.0/
 /*
  *--------------------------------------------------------------------------
  *
- * resNodeIsPort --
- *
- *	If the given position is inside any port declared on the tile,
- *	change the node name to the port name.  Remove the port
- *	declaration if it was used.
- *
- *--------------------------------------------------------------------------
- */
-
-void
-resNodeIsPort(node, x, y, tile)
-    resNode *node;
-    int	    x;
-    int	    y;
-    Tile    *tile;
-{
-    Rect 	*rect;
-    Point 	p;
-    resPort 	*pl, *lp;
-    tileJunk	*junk = (tileJunk *)TiGetClientPTR(tile);
-
-    p.p_x = x;
-    p.p_y = y;
-
-    for (pl = junk->portList; pl; pl = pl->rp_nextPort)
-    {
-	rect = &(pl->rp_bbox);
-	if (GEO_ENCLOSE(&p, rect))
-	{
-	    node->rn_name = pl->rp_nodename;
-	    if (junk->portList == pl)
-		junk->portList = pl->rp_nextPort;
-	    else
-	    {
-	        for (lp = junk->portList; lp && (lp->rp_nextPort != pl);
-			lp = lp->rp_nextPort);
-		lp->rp_nextPort = pl->rp_nextPort;
-	    }
-	    freeMagic(pl);
-	    break;
-	}
-    }
-}
-
-/*
- *--------------------------------------------------------------------------
- *
- * resAllPortNodes --
+ * resMakePortBreakpoints --
  *
  *	Generate new nodes and breakpoints for every unused port declared
- *	on a tile.
+ *	on a tile.  However, if "startpoint" is inside the port position,
+ *	then it has already been processed, so ignore it.
+ *
+ * Results:
+ *	None.
+ *
+ * Side effects:
+ *	Adds breakpoints where ports (drivers, sinks, or labels) have been
+ *	defined as connected to the tile.
  *
  *--------------------------------------------------------------------------
  */
 
 void
-resAllPortNodes(tile, list)
+resMakePortBreakpoints(tile, list)
     Tile 	*tile;
     resNode	**list;
 {
     int		x, y;
     resNode	*resptr;
     resPort 	*pl;
-    tileJunk	*junk = (tileJunk *)TiGetClientPTR(tile);
+    resInfo	*info = (resInfo *)TiGetClientPTR(tile);
+    ResConnect	*connect;
 
     free_magic1_t mm1 = freeMagic1_init();
-    for (pl = junk->portList; pl; pl = pl->rp_nextPort)
+    for (pl = info->portList; pl; pl = pl->rp_nextPort)
     {
 	x = pl->rp_loc.p_x;
 	y = pl->rp_loc.p_y;
 	resptr = (resNode *) mallocMagic((unsigned)(sizeof(resNode)));
-	InitializeNode(resptr, x, y, RES_NODE_ORIGIN);
+	InitializeResNode(resptr, x, y, RES_NODE_ORIGIN);
 	resptr->rn_status = TRUE;
 	resptr->rn_noderes = 0;
 	resptr->rn_name = pl->rp_nodename;
+
+	/* Link back to the resnode from the ResConnect record */
+	connect = pl->rp_connect;
+	connect->rc_node = resptr;
+
 	ResAddToQueue(resptr, list);
-	NEWBREAK(resptr, tile, x, y, NULL);
+	ResNewBreak(resptr, tile, x, y, NULL);
 	freeMagic1(&mm1, pl);
     }
     freeMagic1_end(&mm1);
@@ -112,89 +79,44 @@ resAllPortNodes(tile, list)
 /*
  *--------------------------------------------------------------------------
  *
- * ResMultiPlaneFunc---
+ * ResStartTile --
  *
- *  If device is found overlapping one of its source/drain types, then
- *  generate a new device at the center of the tile and add to ResNodeQueue.
+ *   For the tile at the starting point of the net, create an initial
+ *   resNode entry.
  *
- * Results:
- *	Always 0 to keep the search going.
+ *  Results:
+ *	None.
  *
- * Side effects:
- *	Adds to ResNodeQueue
+ *  Side Effects:
+ *	creates a node.
+ *
  *
  *--------------------------------------------------------------------------
  */
 
-int
-ResMultiPlaneFunc(tile, dinfo, tpptr)
-    Tile *tile;
-    TileType dinfo;	/* Not used, but needs to be handled */
-    Tile **tpptr;
+void
+ResStartTile(tile, x, y)
+    Tile 	*tile;
+    int		x, y;
+
 {
-    Tile *tp = *tpptr;
-    int	 xj, yj;
+    resNode	*resptr;
 
-    /* Simplified split tile handling---Ignore the right side of
-     * tiles that have non-space types on both sides.
-     */
-    if (IsSplit(tile))
-	if (TiGetLeftType(tile) != TT_SPACE && TiGetRightType(tile) != TT_SPACE)
-	    if (dinfo & TT_SIDE)
-		return 0;
-
-    xj = (LEFT(tile) + RIGHT(tile)) / 2;
-    yj = (TOP(tile) + BOTTOM(tile)) / 2;
-    ResNewSDDevice(tp, tile, xj, yj, OTHERPLANE, &ResNodeQueue);
-
-    return 0;
+    resptr = (resNode *) mallocMagic((unsigned)(sizeof(resNode)));
+    InitializeResNode(resptr, x, y, RES_NODE_ORIGIN);
+    resptr->rn_status = TRUE;
+    resptr->rn_noderes = 0;
+    ResAddToQueue(resptr, &ResNodeQueue);
+    ResNewBreak(resptr, tile, x, y, NULL);
+    if (resCurrentNode == NULL) resCurrentNode = resptr;
 }
 
 /*
  *--------------------------------------------------------------------------
  *
- * ResSubstrateFunc---
+ * ResEachTile --
  *
- *  If device is found overlapping its substrate type, then generate a new
- *  device at the center of the tile and add to ResNodeQueue.
- *
- * Results:
- *	Always 0 to keep the search going.
- *
- * Side effects:
- *	Adds to ResNodeQueue
- *
- *--------------------------------------------------------------------------
- */
-
-int
-ResSubstrateFunc(tile, dinfo, tpptr)
-    Tile *tile;
-    TileType dinfo;
-    Tile **tpptr;
-{
-    Tile *tp = *tpptr;
-    int	 xj, yj;
-
-    /* Simplified split tile handling---Ignore the right side of
-     * tiles that have non-space types on both sides.
-     */
-    if (IsSplit(tile))
-	if (TiGetLeftType(tile) != TT_SPACE && TiGetRightType(tile) != TT_SPACE)
-	    if (dinfo & TT_SIDE)
-		return 0;
-
-    xj = (LEFT(tile) + RIGHT(tile)) / 2;
-    yj = (TOP(tile) + BOTTOM(tile)) / 2;
-    ResNewSubDevice(tp, tile, xj, yj, OTHERPLANE, &ResNodeQueue);
-
-    return 0;
-}
-
-/*
- *--------------------------------------------------------------------------
- *
- * ResEachTile--for each tile, make a list of all possible current sources/
+ *   For each tile, make a list of all possible current sources/
  *   sinks including contacts, devices, and junctions.  Once this
  *   list is made, calculate the resistor network for the tile.
  *
@@ -213,10 +135,9 @@ ResSubstrateFunc(tile, dinfo, tpptr)
 #define IGNORE_BOTTOM	8
 
 bool
-ResEachTile(tile, startpoint)
-    Tile 	*tile;
-    Point 	*startpoint;
-
+ResEachTile(tile, devNodeTable)
+    Tile 	*tile;			/* Tile being processed */
+    HashTable	*devNodeTable;		/* Table of tiles connected to devices */
 {
     Tile 	*tp;
     resNode	*resptr;
@@ -225,13 +146,12 @@ ResEachTile(tile, startpoint)
     int		xj, yj, i;
     bool	merged;
     tElement	*tcell;
-    tileJunk	*tstructs= (tileJunk *)TiGetClientPTR(tile);
+    resInfo	*tstructs = (resInfo *)TiGetClientPTR(tile);
     ExtDevice   *devptr;
     int		sides;
+    HashEntry	*he;
 
     ResTileCount++;
-
-    /* Process startpoint, if any. */
 
     /* Simplification:  Split tiles handle either the non-space side,
      * or if neither side is space, then handle the left side.
@@ -257,28 +177,14 @@ ResEachTile(tile, startpoint)
 	t1 = TiGetTypeExact(tile);
     }
 
-    if (startpoint != (Point *) NULL)
-    {
-	int x = startpoint->p_x;
-	int y = startpoint->p_y;
-	resptr = (resNode *) mallocMagic((unsigned)(sizeof(resNode)));
-	InitializeNode(resptr, x, y, RES_NODE_ORIGIN);
-	resptr->rn_status = TRUE;
-	resptr->rn_noderes = 0;
-	ResAddToQueue(resptr, &ResNodeQueue);
-	NEWBREAK(resptr, tile, x, y, NULL);
-	if (resCurrentNode == NULL) resCurrentNode = resptr;
-	resNodeIsPort(resptr, x, y, tile);
-    }
-
-    if TTMaskHasType(&(ExtCurStyle->exts_deviceMask), t1)
+    if (TTMaskHasType(&(ExtCurStyle->exts_deviceMask), t1))
     {
 	/*
 	 * The device is put in the center of the tile. This is fine
 	 * for single tile device, but not as good for multiple ones.
 	 */
 
-	if (tstructs->tj_status & RES_TILE_DEV)
+	if (tstructs->ri_status & RES_TILE_DEV)
  	{
 	    if (tstructs->deviceList->rd_fet_gate == NULL)
 	    {
@@ -291,12 +197,10 @@ ResEachTile(tile, startpoint)
 		tcell->te_thist = tstructs->deviceList;
 		tcell->te_nextt = NULL;
 
-		InitializeNode(resptr, x, y, RES_NODE_JUNCTION);
+		InitializeResNode(resptr, x, y, RES_NODE_JUNCTION);
 		resptr->rn_te = tcell;
 		ResAddToQueue(resptr, &ResNodeQueue);
-		resNodeIsPort(resptr, x, y, tile);
-
-		NEWBREAK(resptr, tile, resptr->rn_loc.p_x,
+		ResNewBreak(resptr, tile, resptr->rn_loc.p_x,
 		     			resptr->rn_loc.p_y, NULL);
 	    }
 	}
@@ -325,7 +229,7 @@ ResEachTile(tile, startpoint)
 
     /* left */
     if (!(sides & IGNORE_LEFT))
-    for (tp = BL(tile); BOTTOM(tp) < TOP(tile); tp=RT(tp))
+    for (tp = BL(tile); BOTTOM(tp) < TOP(tile); tp = RT(tp))
     {
 	t2 = TiGetRightType(tp);
 	if (TTMaskHasType(&(ExtCurStyle->exts_deviceMask), t2))
@@ -340,14 +244,14 @@ ResEachTile(tile, startpoint)
 			/* found device */
 			xj = LEFT(tile);
 			yj = (TOP(tp) + BOTTOM(tp)) >> 1;
-			ResNewSDDevice(tile, tp, xj, yj, RIGHTEDGE, &ResNodeQueue);
+			ResNewTermDevice(tile, tp, i, xj, yj, RIGHTEDGE, &ResNodeQueue);
 			break;
 		    }
 		}
 		if (i < devptr->exts_deviceSDCount) break;
 	    }
 	}
-	if TTMaskHasType(&(ExtCurStyle->exts_nodeConn[t1]), t2)
+	if (TTMaskHasType(&(ExtCurStyle->exts_nodeConn[t1]), t2))
 	{
 	    /* tile is junction */
 	    xj = LEFT(tile);
@@ -358,7 +262,7 @@ ResEachTile(tile, startpoint)
 
     /* right */
     if (!(sides & IGNORE_RIGHT))
-    for (tp = TR(tile); TOP(tp) > BOTTOM(tile); tp=LB(tp))
+    for (tp = TR(tile); TOP(tp) > BOTTOM(tile); tp = LB(tp))
     {
 	t2 = TiGetLeftType(tp);
 	if (TTMaskHasType(&(ExtCurStyle->exts_deviceMask), t2))
@@ -373,18 +277,18 @@ ResEachTile(tile, startpoint)
 			/* found device */
 			xj = RIGHT(tile);
 			yj = (TOP(tp) + BOTTOM(tp)) >> 1;
-			ResNewSDDevice(tile, tp, xj, yj, LEFTEDGE, &ResNodeQueue);
+			ResNewTermDevice(tile, tp, i, xj, yj, LEFTEDGE, &ResNodeQueue);
 			break;
 		    }
 		}
 		if (i < devptr->exts_deviceSDCount) break;
 	    }
 	}
-	if TTMaskHasType(&ExtCurStyle->exts_nodeConn[t1], t2)
+	if (TTMaskHasType(&ExtCurStyle->exts_nodeConn[t1], t2))
 	{
 	    /* tile is junction */
 	    xj = RIGHT(tile);
-	    yj = (MAX(BOTTOM(tile),BOTTOM(tp)) + MIN(TOP(tile), TOP(tp))) >> 1;
+	    yj = (MAX(BOTTOM(tile), BOTTOM(tp)) + MIN(TOP(tile), TOP(tp))) >> 1;
 	    (void)ResProcessJunction(tile, tp, xj, yj, &ResNodeQueue);
 	}
     }
@@ -406,25 +310,25 @@ ResEachTile(tile, startpoint)
 			/* found device */
 			yj = TOP(tile);
 			xj = (LEFT(tp) + RIGHT(tp)) >> 1;
-			ResNewSDDevice(tile, tp, xj, yj, BOTTOMEDGE, &ResNodeQueue);
+			ResNewTermDevice(tile, tp, i, xj, yj, BOTTOMEDGE, &ResNodeQueue);
 			break;
 		    }
 		}
 		if (i < devptr->exts_deviceSDCount) break;
 	    }
 	}
-	if TTMaskHasType(&ExtCurStyle->exts_nodeConn[t1], t2)
+	if (TTMaskHasType(&ExtCurStyle->exts_nodeConn[t1], t2))
 	{
 	    /* tile is junction */
 	    yj = TOP(tile);
-	    xj = (MAX(LEFT(tile),LEFT(tp)) + MIN(RIGHT(tile),RIGHT(tp))) >> 1;
+	    xj = (MAX(LEFT(tile), LEFT(tp)) + MIN(RIGHT(tile), RIGHT(tp))) >> 1;
 	    ResProcessJunction(tile, tp, xj, yj, &ResNodeQueue);
 	}
     }
 
     /* bottom */
     if (!(sides & IGNORE_BOTTOM))
-    for (tp = LB(tile); LEFT(tp) < RIGHT(tile); tp=TR(tp))
+    for (tp = LB(tile); LEFT(tp) < RIGHT(tile); tp = TR(tp))
     {
 	t2 = TiGetTopType(tp);
 	if (TTMaskHasType(&(ExtCurStyle->exts_deviceMask), t2))
@@ -439,86 +343,59 @@ ResEachTile(tile, startpoint)
 			/* found device */
 			yj = BOTTOM(tile);
 			xj = (LEFT(tp) + RIGHT(tp)) >> 1;
-			ResNewSDDevice(tile, tp, xj, yj, TOPEDGE, &ResNodeQueue);
+			ResNewTermDevice(tile, tp, i, xj, yj, TOPEDGE, &ResNodeQueue);
 			break;
 		    }
 		}
 		if (i < devptr->exts_deviceSDCount) break;
 	    }
 	}
-	if TTMaskHasType(&(ExtCurStyle->exts_nodeConn[t1]), t2)
+	if (TTMaskHasType(&(ExtCurStyle->exts_nodeConn[t1]), t2))
 	{
 	    /* tile is junction */
 	    yj = BOTTOM(tile);
-	    xj = (MAX(LEFT(tile),LEFT(tp)) + MIN(RIGHT(tile),RIGHT(tp))) >> 1;
+	    xj = (MAX(LEFT(tile), LEFT(tp)) + MIN(RIGHT(tile), RIGHT(tp))) >> 1;
 	    ResProcessJunction(tile, tp, xj, yj, &ResNodeQueue);
 	}
     }
 
-    /* Check for source/drain on other planes (e.g., capacitors, bipolars, ...) */
+    /* Check for terminals on other planes (e.g., capacitors, bipolars, ...)	*/
+    /* Note:  Need to tag these tiles per device to avoid checking through	*/
+    /* the device list for each tile. (To be done)				*/
 
-    if (TTMaskHasType(&ResSDTypesBitMask, t1))
+    he = HashLookOnly(devNodeTable, (char *)tile);
+    if (he != NULL)
     {
-	Rect r;
-	int pNum;
-	TileTypeBitMask devMask;
+	resDevTerm *resdevRec, *resdevList;
+	Tile *devtile;
 
-	TiToRect(tile, &r);
-
-	for (pNum = 0; pNum < DBNumPlanes; pNum++)
+	resdevList = (resDevTerm *)HashGetValue(he);
+	while (resdevList != NULL)
 	{
-	    if (DBTypeOnPlane(t1, pNum)) continue;
-
-	    /* NOTE:  This is ridiculously inefficient and should be done
-	     * in a different way.
-	     */
-
-	    TTMaskZero(&devMask);
-	    for (t2 = TT_TECHDEPBASE; t2 < DBNumUserLayers; t2++)
-		for (devptr = ExtCurStyle->exts_device[t2]; devptr;
-			    devptr = devptr->exts_next)
-		    for (i = 0; !TTMaskIsZero(&devptr->exts_deviceSDTypes[i]); i++)
-			if (TTMaskHasType(&devptr->exts_deviceSDTypes[i], t1))
-			    TTMaskSetType(&devMask, t2);
-
-	    DBSrPaintArea((Tile *)NULL, ResUse->cu_def->cd_planes[pNum],
-			&r, &devMask, ResMultiPlaneFunc, (ClientData)&tile);
+	    resdevRec = resdevList;
+	    /* Set the position from the device, not the current tile */
+	    devtile = resdevRec->rdt_tile;
+	    xj = (RIGHT(devtile) + LEFT(devtile)) / 2;
+	    yj = (TOP(devtile) + BOTTOM(devtile)) / 2;
+	    if (resdevRec->rdt_term == -1)	/* Substrate */
+	    {
+		ResNewSubDevice(tile, resdevRec->rdt_tile, xj, yj,
+				OTHERPLANE, &ResNodeQueue);
+	    }
+	    else	/* Terminal */
+	    {
+		ResNewTermDevice(tile, resdevRec->rdt_tile, resdevRec->rdt_term,
+				xj, yj, OTHERPLANE, &ResNodeQueue);
+	    }
+	    resdevList = resdevList->rdt_next;
+	    freeMagic(resdevRec);
 	}
+	HashSetValue(he, (char *)NULL);		/* Done with hash record */
     }
 
-    /* Check for substrate under device */
+    tstructs->ri_status |= RES_TILE_DONE;
 
-    if (TTMaskHasType(&ResSubTypesBitMask, t1))
-    {
-	Rect r;
-	int pNum;
-	TileTypeBitMask devMask;
-
-	TiToRect(tile, &r);
-
-	for (pNum = 0; pNum < DBNumPlanes; pNum++)
-	{
-	    if (DBTypeOnPlane(t1, pNum)) continue;
-
-	    /* NOTE:  This is ridiculously inefficient and should be done
-	     * in a different way.
-	     */
-
-	    TTMaskZero(&devMask);
-	    for (t2 = TT_TECHDEPBASE; t2 < DBNumUserLayers; t2++)
-		for (devptr = ExtCurStyle->exts_device[t2]; devptr;
-			    devptr = devptr->exts_next)
-		    if (TTMaskHasType(&devptr->exts_deviceSubstrateTypes, t1))
-			TTMaskSetType(&devMask, t2);
-
-	    DBSrPaintArea((Tile *)NULL, ResUse->cu_def->cd_planes[pNum],
-			&r, &devMask, ResSubstrateFunc, (ClientData)&tile);
-	}
-    }
-
-    tstructs->tj_status |= RES_TILE_DONE;
-
-    resAllPortNodes(tile, &ResNodeQueue);
+    resMakePortBreakpoints(tile, &ResNodeQueue);
 
     merged = ResCalcTileResistance(tile, tstructs, &ResNodeQueue,
 			&ResNodeList);

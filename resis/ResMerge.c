@@ -26,7 +26,6 @@ extern void ResEliminateResistor();
 extern void ResCleanNode();
 extern void ResFixBreakPoint();
 
-
 /*
  *-------------------------------------------------------------------------
  *
@@ -53,7 +52,7 @@ ResDoneWithNode(resptr)
     resResistor	*rr1;
 
     resptr2 = NULL;
-    resptr->rn_status |= RESTRUE;
+    resptr->rn_status |= RES_TRUE;
     status = UNTOUCHED;
 
     /* are there any resistors? */
@@ -93,9 +92,9 @@ ResDoneWithNode(resptr)
 	    ResMergeNodes(resptr2, resptr, &ResNodeQueue, &ResNodeList);
 	    resptr2->rn_float.rn_area += rr1->rr_float.rr_area;
 	    ResEliminateResistor(rr1, &ResResList);
-	    if ((resptr2->rn_status & RESTRUE) == RESTRUE)
+	    if ((resptr2->rn_status & RES_TRUE) == RES_TRUE)
 	    {
-		resptr2->rn_status &= ~RESTRUE;
+		resptr2->rn_status &= ~RES_TRUE;
 		ResDoneWithNode(resptr2);
 	    }
 	    resptr2 = NULL;
@@ -108,14 +107,16 @@ ResDoneWithNode(resptr)
     /* Eliminations that can be only if there are no devices connected */
     /* to node.  Series and dangling connections fall in this group.	*/
 
-    if ((resptr->rn_te == NULL) && (resptr->rn_why != RES_NODE_ORIGIN)
-		&& (status == UNTOUCHED))
+    if ((status == UNTOUCHED) && (resptr->rn_te == NULL) &&
+		!(resptr->rn_why & (RES_NODE_ORIGIN | RES_NODE_SINK)))
      	status = ResSeriesCheck(resptr);
 
-    if ((status == UNTOUCHED) && (resptr->rn_why != RES_NODE_ORIGIN))
+    if ((status == UNTOUCHED) &&
+		!(resptr->rn_why & (RES_NODE_ORIGIN | RES_NODE_SINK)))
 	status = ResParallelCheck(resptr);
 
-    if ((status == UNTOUCHED) && (resptr->rn_why != RES_NODE_ORIGIN))
+    if ((status == UNTOUCHED) &&
+		!(resptr->rn_why & (RES_NODE_ORIGIN | RES_NODE_SINK)))
 	status = ResTriangleCheck(resptr);
 }
 
@@ -150,14 +151,6 @@ ResFixRes(resptr, resptr2, resptr3, elimResis, newResis)
     ASSERT(newResis->rr_value > 0, "series");
     newResis->rr_float.rr_area += elimResis->rr_float.rr_area;
 
-#ifdef ARIEL
-    if (elimResis->rr_csArea && elimResis->rr_csArea < newResis->rr_csArea
-		|| newResis->rr_csArea == 0)
-    {
-     	newResis->rr_csArea = elimResis->rr_csArea;
-	newResis->rr_tt = elimResis->rr_tt;
-    }
-#endif
     for (thisREl = resptr3->rn_re; (thisREl != NULL); thisREl = thisREl->re_nextEl)
     {
      	if (thisREl->re_thisEl == elimResis)
@@ -206,9 +199,6 @@ ResFixParallel(elimResis, newResis)
      	newResis->rr_value = 0;
     }
     newResis->rr_float.rr_area += elimResis->rr_float.rr_area;
-#ifdef ARIEL
-    newResis->rr_csArea += elimResis->rr_csArea;
-#endif
     ResDeleteResPointer(elimResis->rr_connection1, elimResis);
     ResDeleteResPointer(elimResis->rr_connection2, elimResis);
     ResEliminateResistor(elimResis, &ResResList);
@@ -220,7 +210,7 @@ ResFixParallel(elimResis, newResis)
  * ResSeriesCheck -- for nodes with no devices, sees if a series
  *	or loop combination is possible.
  *
- * Results: returns SINGLE,LOOP,or SERIES if succesful.
+ * Results: returns SINGLE, LOOP, or SERIES if succesful.
  *
  * Side Effects: may delete some nodes and resistors.
  *
@@ -253,9 +243,9 @@ ResSeriesCheck(resptr)
 	ResEliminateResistor(rr1, &ResResList);
 	ResCleanNode(resptr, TRUE, &ResNodeList, &ResNodeQueue);
 	status = SINGLE;
-	if (resptr2->rn_status & RESTRUE)
+	if (resptr2->rn_status & RES_TRUE)
 	{
-	    resptr2->rn_status &= ~RESTRUE;
+	    resptr2->rn_status &= ~RES_TRUE;
 	    ResDoneWithNode(resptr2);
 	}
 	resptr2 = NULL;
@@ -291,9 +281,9 @@ ResSeriesCheck(resptr)
 			rr1->rr_connection1 = rr2->rr_connection2;
 			ResFixRes(resptr, resptr2, resptr3, rr2, rr1);
 		    }
-		    if ((resptr2->rn_status & RESTRUE) == RESTRUE)
+		    if ((resptr2->rn_status & RES_TRUE) == RES_TRUE)
 		    {
-			resptr2->rn_status &= ~RESTRUE;
+			resptr2->rn_status &= ~RES_TRUE;
 			ResDoneWithNode(resptr2);
 		    }
 		    resptr2 = NULL;
@@ -322,9 +312,9 @@ ResSeriesCheck(resptr)
 			rr1->rr_connection1 = rr2->rr_connection1;
 			ResFixRes(resptr, resptr2, resptr3, rr2, rr1);
 		    }
-		    if ((resptr2->rn_status & RESTRUE) == RESTRUE)
+		    if ((resptr2->rn_status & RES_TRUE) == RES_TRUE)
 		    {
-			resptr2->rn_status &= ~RESTRUE;
+			resptr2->rn_status &= ~RES_TRUE;
 			ResDoneWithNode(resptr2);
 		    }
 		    resptr2 = NULL;
@@ -356,9 +346,9 @@ ResSeriesCheck(resptr)
 			rr1->rr_connection2 = rr2->rr_connection2;
 			ResFixRes(resptr, resptr2, resptr3, rr2, rr1);
 		    }
-		    if ((resptr2->rn_status & RESTRUE) == RESTRUE)
+		    if ((resptr2->rn_status & RES_TRUE) == RES_TRUE)
 		    {
-			resptr2->rn_status &= ~RESTRUE;
+			resptr2->rn_status &= ~RES_TRUE;
 			ResDoneWithNode(resptr2);
 		    }
 		    resptr2 = NULL;
@@ -387,9 +377,9 @@ ResSeriesCheck(resptr)
 			rr1->rr_connection2 = rr2->rr_connection1;
 			ResFixRes(resptr, resptr2, resptr3, rr2, rr1);
 		    }
-		    if ((resptr2->rn_status & RESTRUE) == RESTRUE)
+		    if ((resptr2->rn_status & RES_TRUE) == RES_TRUE)
 		    {
-			resptr2->rn_status &= ~RESTRUE;
+			resptr2->rn_status &= ~RES_TRUE;
 			ResDoneWithNode(resptr2);
 		    }
 		    resptr2 = NULL;
@@ -415,13 +405,70 @@ ResSeriesCheck(resptr)
 int
 ResParallelCheck(resptr)
     resNode	*resptr;
-
 {
-    resResistor	*r1,*r2;
-    resNode	*resptr2,*resptr3;
+    resResistor	*r1, *r2;
+    resNode	*resptr2, *resptr3;
     int		status = UNTOUCHED;
     resElement	*rcell1, *rcell2;
 
+    int rcount = 0;
+
+    /* When the number of resistors gets to be large enough, it is more efficient to
+     * sort the resistor list and then do a single pass to see if any two consecutive
+     * items in the sorted list can be merged, than to do a double loop through the
+     * resistor list at ~O(N^2).
+     */
+    
+    for (rcell1 = resptr->rn_re; rcell1 != NULL; rcell1 = rcell1->re_nextEl)
+    {
+	rcount++;
+	if (rcount >= 10) break;
+    }
+
+    if (rcount >= 10)
+    {
+	HashTable	NodeResTable;
+	HashEntry	*he;
+
+	/* Hash the connections */
+	HashInit(&NodeResTable, HT_DEFAULTSIZE, HT_CLIENTKEYS);
+	
+	for (rcell2 = resptr->rn_re; rcell2 != NULL; rcell2 = rcell2->re_nextEl)
+	{
+	    /* One connection is always resptr;  find the other one */
+	    resptr3 = rcell2->re_thisEl->rr_connection1;
+	    if (resptr3 == resptr) resptr3 = rcell2->re_thisEl->rr_connection2;
+	    
+	    he = HashFind(&NodeResTable, (char *)resptr3);
+	    if ((rcell1 = (resElement*)HashGetValue(he)))
+	    {
+		r1 = rcell1->re_thisEl;
+		r2 = rcell2->re_thisEl;
+
+		if (TTMaskHasType(ResNoMergeMask+r1->rr_tt, r2->rr_tt)) continue;
+
+		ResFixParallel(r1, r2);
+	        status = PARALLEL;
+		resptr2 = NULL;
+		if (resptr3->rn_status & RES_TRUE)
+		{
+		    resptr2 = resptr3;
+		    resptr2->rn_status &= ~RES_TRUE;
+		}
+		ResDoneWithNode(resptr);
+		if (resptr2 != NULL) ResDoneWithNode(resptr2);
+		break;
+	    }
+	    else
+		HashSetValue(he, (char *)rcell2);
+	}
+	HashKill(&NodeResTable);
+	return status;
+    }
+
+    /* This does the same thing as above, but for a small number of resistors
+     * per node, it avoids the overhead of creating and destroying hash tables.
+     */
 
     for (rcell1 = resptr->rn_re; rcell1->re_nextEl != NULL;
 		    rcell1 = rcell1->re_nextEl)
@@ -444,10 +491,10 @@ ResParallelCheck(resptr)
 		ResFixParallel(r1, r2);
 	        status = PARALLEL;
 		resptr2 = NULL;
-		if (resptr3->rn_status & RESTRUE)
+		if (resptr3->rn_status & RES_TRUE)
 		{
 		    resptr2 = resptr3;
-		    resptr2->rn_status &= ~RESTRUE;
+		    resptr2->rn_status &= ~RES_TRUE;
 		}
 		ResDoneWithNode(resptr);
 		if (resptr2 != NULL) ResDoneWithNode(resptr2);
@@ -456,6 +503,7 @@ ResParallelCheck(resptr)
 	}
 	if (status == PARALLEL) break;
     }
+
     return status;
 }
 
@@ -482,6 +530,179 @@ ResTriangleCheck(resptr)
     float	r1, r2, r3, denom;
     resNode	*n1, *n2, *n3;
     resElement	*rcell1, *rcell2, *rcell3, *element;
+    int		rcount = 0;
+
+    /* When the size of the linked list of resistors is long, it is faster to
+     * hash the neighboring connections and then find the first entry in the
+     * neighbor's node list that is another neighbor.
+     */
+    for (rcell1 = resptr->rn_re; rcell1 != NULL; rcell1 = rcell1->re_nextEl)
+    {
+	rcount++;
+	if (rcount >= 10) break;
+    }
+
+    if (rcount >= 10)
+    {
+	HashTable	NodeResTable;
+	HashEntry	*he, *he2;
+	HashSearch	hs;
+
+	/* Hash the neighboring connections */
+	HashInit(&NodeResTable, HT_DEFAULTSIZE, HT_CLIENTKEYS);
+
+	for (rcell2 = resptr->rn_re; rcell2 != NULL; rcell2 = rcell2->re_nextEl)
+	{
+	    rr2 = rcell2->re_thisEl;
+
+	    /* One connection is always resptr;  find the other one */
+	    n2 = rr2->rr_connection1;
+	    if (n2 == resptr) n2 = rr2->rr_connection2;
+
+	    he = HashFind(&NodeResTable, (char *)n2);
+	    if (!(rcell1 = (resElement *)HashGetValue(he)))
+		HashSetValue(he, (char *)rcell2);
+	}
+
+	HashStartSearch(&hs);
+	while ((he = HashNext(&NodeResTable, &hs)))
+	{
+	    /* Get each node that neighbors resptr */
+	    n1 = (resNode *)he->h_key.h_ptr;
+	    rcell1 = (resElement *)HashGetValue(he);
+	    rr1 = rcell1->re_thisEl;
+
+	    /* Check the list of resistors of neighbor n1 for any resistor whose
+	     * other end is also a neighbor of resptr.
+	     */
+	    for (rcell3 = n1->rn_re; rcell3 != NULL; rcell3 = rcell3->re_nextEl)
+	    {
+		rr3 = rcell3->re_thisEl;
+
+		/* Resistor can't be merged */
+		if (TTMaskHasType(ResNoMergeMask + rr1->rr_tt, rr3->rr_tt))
+		    continue;
+
+		/* One connection is always n1;  find the other one */
+		n2 = rr3->rr_connection1;
+		if (n2 == n1) n2 = rr3->rr_connection2;
+
+		he2 = HashLookOnly(&NodeResTable, (char *)n2);
+		if (he2)
+		{
+		    /* Found a triangle */
+		    rcell2 = (resElement *)HashGetValue(he2);
+		    rr2 = rcell2->re_thisEl;
+
+		    /* . . . But it can't be merged */
+		    if (TTMaskHasType(ResNoMergeMask + rr1->rr_tt, rr2->rr_tt))
+			continue;
+		    if (TTMaskHasType(ResNoMergeMask + rr2->rr_tt, rr3->rr_tt))
+			continue;
+
+		    status = TRIANGLE;
+		    if ((denom = rr1->rr_value + rr2->rr_value + rr3->rr_value) != 0.0)
+		    {
+			denom = 1.0  /denom;
+			/* calculate new values for resistors */
+			r1 = (((float)rr1->rr_value) * ((float)rr2->rr_value)) * denom;
+			r2 = (((float)rr2->rr_value) * ((float)rr3->rr_value)) * denom;
+			r3 = (((float)rr1->rr_value) * ((float)rr3->rr_value)) * denom;
+
+			rr1->rr_value = r1 + 0.5;
+			rr2->rr_value = r2 + 0.5;
+			rr3->rr_value = r3 + 0.5;
+			ASSERT(rr1->rr_value >= 0, "Triangle");
+			ASSERT(rr2->rr_value >= 0, "Triangle");
+			ASSERT(rr3->rr_value >= 0, "Triangle");
+		    }
+		    else
+		    {
+			rr1->rr_value = 0;
+			rr2->rr_value = 0;
+			rr3->rr_value = 0;
+		    }
+		    n3 = (resNode *)mallocMagic((unsigned)(sizeof(resNode)));
+
+		    /* Where should the new node be put?  It    */
+		    /* is arbitrarily assigned to the location	*/
+		    /* occupied by the first node.		*/
+
+		    InitializeResNode(n3, resptr->rn_loc.p_x, resptr->rn_loc.p_y, TRIANGLE);
+		    n3->rn_status = RES_FINISHED | RES_TRUE | RES_MARKED;
+
+		    n3->rn_less = NULL;
+		    n3->rn_more = ResNodeList;
+		    ResNodeList->rn_less = n3;
+		    ResNodeList = n3;
+		    if (resptr == rr1->rr_connection1)
+		    {
+			ResDeleteResPointer(rr1->rr_connection2, rr1);
+			rr1->rr_connection2 = n3;
+		    }
+		    else
+		    {
+			ResDeleteResPointer(rr1->rr_connection1, rr1);
+			rr1->rr_connection1 = n3;
+		    }
+		    if (n2 == rr2->rr_connection1)
+		    {
+			ResDeleteResPointer(rr2->rr_connection2, rr2);
+			rr2->rr_connection2 = n3;
+		    }
+		    else
+		    {
+			ResDeleteResPointer(rr2->rr_connection1, rr2);
+			rr2->rr_connection1 = n3;
+		    }
+		    if (n1 == rr3->rr_connection1)
+		    {
+			ResDeleteResPointer(rr3->rr_connection2, rr3);
+			rr3->rr_connection2 = n3;
+		    }
+		    else
+		    {
+			ResDeleteResPointer(rr3->rr_connection1, rr3);
+			rr3->rr_connection1 = n3;
+		    }
+		    element = (resElement *)mallocMagic((unsigned)(sizeof(resElement)));
+		    element->re_nextEl = NULL;
+		    element->re_thisEl = rr1;
+		    n3->rn_re = element;
+		    element = (resElement *)mallocMagic((unsigned)(sizeof(resElement)));
+		    element->re_nextEl = n3->rn_re;
+		    element->re_thisEl = rr2;
+		    n3->rn_re = element;
+		    element = (resElement *)mallocMagic((unsigned)(sizeof(resElement)));
+		    element->re_nextEl = n3->rn_re;
+		    element->re_thisEl = rr3;
+		    n3->rn_re = element;
+		    if ((n1->rn_status & RES_TRUE) == RES_TRUE)
+			n1->rn_status &= ~RES_TRUE;
+		    else
+			n1 = NULL;
+
+		    if ((n2->rn_status & RES_TRUE) == RES_TRUE)
+			n2->rn_status &= ~RES_TRUE;
+		    else
+		 	n2 = NULL;
+
+		    ResDoneWithNode(resptr);
+		    if (n1 != NULL) ResDoneWithNode(n1);
+		    if (n2 != NULL) ResDoneWithNode(n2);
+		    break;
+		}
+	    }
+	    if (status == TRIANGLE) break;
+	}
+	
+	HashKill(&NodeResTable);
+	return status;
+    }
+
+    /* This does the same thing as above, but for a small number of resistors
+     * per node, avoiding the overhead of creating and destroying hash tables.
+     */
 
     for (rcell1 = resptr->rn_re; rcell1->re_nextEl != NULL;
 		rcell1 = rcell1->re_nextEl)
@@ -542,8 +763,8 @@ ResTriangleCheck(resptr)
 	        /* is arbitrarily assigned to the location  */
 		/* occupied by the first node.		    */
 
-		InitializeNode(n3, resptr->rn_loc.p_x, resptr->rn_loc.p_y, TRIANGLE);
-		n3->rn_status = FINISHED | RESTRUE | MARKED;
+		InitializeResNode(n3, resptr->rn_loc.p_x, resptr->rn_loc.p_y, TRIANGLE);
+		n3->rn_status = RES_FINISHED | RES_TRUE | RES_MARKED;
 
 		n3->rn_less = NULL;
 		n3->rn_more = ResNodeList;
@@ -591,13 +812,13 @@ ResTriangleCheck(resptr)
 		element->re_nextEl = n3->rn_re;
 		element->re_thisEl = rr3;
 		n3->rn_re = element;
-		if ((n1->rn_status & RESTRUE) == RESTRUE)
-		    n1->rn_status &= ~RESTRUE;
+		if ((n1->rn_status & RES_TRUE) == RES_TRUE)
+		    n1->rn_status &= ~RES_TRUE;
 		else
 		    n1 = NULL;
 
-		if ((n2->rn_status & RESTRUE) == RESTRUE)
-		    n2->rn_status &= ~RESTRUE;
+		if ((n2->rn_status & RES_TRUE) == RES_TRUE)
+		    n2->rn_status &= ~RES_TRUE;
 		else
 		    n2 = NULL;
 
@@ -618,9 +839,9 @@ ResTriangleCheck(resptr)
  *
  * ResMergeNodes--
  *
- * results: none
+ * Results: none
  *
- * side effects: appends all the cElement, jElement, tElement and
+ * Side Effects: appends all the cElement, jElement, tElement and
  *       resElement structures from node 2 onto node 1.  Node 2 is
  *	 then eliminated.
  *
@@ -648,15 +869,18 @@ ResMergeNodes(node1, node2, pendingList, doneList)
 	return;
     }
 
-    /* don't want to merge away startpoint */
+    /* don't want to merge away start or end points */
     if (node2->rn_why & RES_NODE_ORIGIN)
       	node1->rn_why = RES_NODE_ORIGIN;
+
+    if (node2->rn_why & RES_NODE_SINK)
+      	node1->rn_why = RES_NODE_SINK;
 
     /* set node resistance */
     if (node1->rn_noderes > node2->rn_noderes)
     {
 	node1->rn_noderes = node2->rn_noderes;
-	if ((node1->rn_status & FINISHED) != FINISHED)
+	if ((node1->rn_status & RES_FINISHED) != RES_FINISHED)
 	{
 	    ResRemoveFromQueue(node1, pendingList);
 	    ResAddToQueue(node1, pendingList);
@@ -665,37 +889,22 @@ ResMergeNodes(node1, node2, pendingList, doneList)
     node1->rn_float.rn_area += node2->rn_float.rn_area;
 
     /* combine relevant flags */
-    node1->rn_status |= (node2->rn_status & RN_MAXTDI);
+    node1->rn_status |= (node2->rn_status & RES_MAXTDI);
 
     /* merge device lists */
     workingDev = node2->rn_te;
     while (workingDev != NULL)
     {
-      	if (workingDev->te_thist->rd_status & RES_DEV_PLUG)
-	{
-	    ResPlug *plug = (ResPlug *) workingDev->te_thist;
-	    if (plug->rpl_node == node2)
-	       	plug->rpl_node = node1;
-	    else
-	    {
-	       	TxError("Bad plug node: is (%d %d), should be (%d %d)\n",
-			    plug->rpl_node->rn_loc.p_x, plug->rpl_node->rn_loc.p_y,
-			    node2->rn_loc.p_x, node2->rn_loc.p_y);
-	       	plug->rpl_node = NULL;
-	    }
-	}
-	else
-	{
-	    int j;
+	int j;
 
-	    for (j = 0; j != workingDev->te_thist->rd_nterms; j++)
-		if (workingDev->te_thist->rd_terminals[j] == node2)
-	   	    workingDev->te_thist->rd_terminals[j] = node1;
-	 }
-	 tDev = workingDev;
-	 workingDev = workingDev->te_nextt;
-	 tDev->te_nextt = node1->rn_te;
-	 node1->rn_te = tDev;
+	for (j = 0; j != workingDev->te_thist->rd_nterms; j++)
+	    if (workingDev->te_thist->rd_terminals[j] == node2)
+	   	workingDev->te_thist->rd_terminals[j] = node1;
+
+	tDev = workingDev;
+	workingDev = workingDev->te_nextt;
+	tDev->te_nextt = node1->rn_te;
+	node1->rn_te = tDev;
     }
 
     /* append junction lists */
@@ -706,13 +915,13 @@ ResMergeNodes(node1, node2, pendingList, doneList)
 	tJunc = workingJunc;
 	for (i = 0; i < TILES_PER_JUNCTION; i++)
 	{
-	    tileJunk *junk;
+	    resInfo *info;
 
 	    tile = tJunc->je_thisj->rj_Tile[i];
-	    junk = (tileJunk *) TiGetClientPTR(tile);
+	    info = (resInfo *) TiGetClientPTR(tile);
 
-	    if ((junk->tj_status & RES_TILE_DONE) == FALSE)
-		ResFixBreakPoint(&junk->breakList, node2, node1);
+	    if ((info->ri_status & RES_TILE_DONE) == FALSE)
+		ResFixBreakPoint(&info->breakList, node2, node1);
 	}
         tJunc->je_thisj->rj_jnode = node1;
 	workingJunc = workingJunc->je_nextj;
@@ -729,13 +938,13 @@ ResMergeNodes(node1, node2, pendingList, doneList)
 	{
 	    if (workingCon->ce_thisc->cp_cnode[i] == node2)
 	    {
-	        tileJunk *junk;
+	        resInfo *info;
 
 		workingCon->ce_thisc->cp_cnode[i] = node1;
 	        tile =tCon->ce_thisc->cp_tile[i];
-		junk = (tileJunk *) TiGetClientPTR(tile);
-	   	if ((junk->tj_status & RES_TILE_DONE) == FALSE)
-		    ResFixBreakPoint(&junk->breakList, node2, node1);
+		info = (resInfo *) TiGetClientPTR(tile);
+	   	if ((info->ri_status & RES_TILE_DONE) == FALSE)
+		    ResFixBreakPoint(&info->breakList, node2, node1);
 	    }
 	}
 	workingCon = workingCon->ce_nextc;
@@ -749,11 +958,11 @@ ResMergeNodes(node1, node2, pendingList, doneList)
     else if ((node2->rn_name != NULL) && (node2->rn_name != node1->rn_name))
     {
 	HashEntry *entry;
-	ResSimNode *node;
+	ResExtNode *node;
 
 	/* Check if node2 is a port */
 	entry = HashFind(&ResNodeTable, node2->rn_name);
-	node = (ResSimNode *)HashGetValue(entry);
+	node = (ResExtNode *)HashGetValue(entry);
 	if (node && (node->status & PORTNODE))
 	    node1->rn_name = node2->rn_name;
     }
@@ -775,7 +984,7 @@ ResMergeNodes(node1, node2, pendingList, doneList)
 	tRes->re_nextEl = node1->rn_re;
 	node1->rn_re = tRes;
     }
-    if ((node2->rn_status & FINISHED) == FINISHED)
+    if ((node2->rn_status & RES_FINISHED) == RES_FINISHED)
       	ResRemoveFromQueue(node2, doneList);
     else
       	ResRemoveFromQueue(node2, pendingList);
@@ -785,6 +994,9 @@ ResMergeNodes(node1, node2, pendingList, doneList)
 	freeMagic((char *)node2->rn_client);
 	node2->rn_client = (ClientData)NULL;
     }
+
+    /* Don't merge away the ResNodeAtOrigin node */
+    if (ResNodeAtOrigin == node2) ResNodeAtOrigin = node1;
 
     node2->rn_re = (resElement *)CLIENTDEFAULT;
     node2->rn_ce = (cElement   *)CLIENTDEFAULT;
@@ -801,7 +1013,7 @@ ResMergeNodes(node1, node2, pendingList, doneList)
  * ResDeleteResPointer-- Deletes the pointer from a node to a resistor.
  *	Used when a resistor is deleted.
  *
- * Results:none
+ * Results: none
  *
  * Side Effects: Modifies a node's resistor list.
  *
@@ -809,7 +1021,7 @@ ResMergeNodes(node1, node2, pendingList, doneList)
  */
 
 void
-ResDeleteResPointer(node,resistor)
+ResDeleteResPointer(node, resistor)
     resNode	*node;
     resResistor	*resistor;
 
@@ -850,7 +1062,7 @@ ResDeleteResPointer(node,resistor)
  *
  * ResEliminateResistor--
  *
- * Results:none
+ * Results: none
  *
  * Side Effects: Deletes a resistor. Does not delete pointers from nodes to
  *	resistor.
@@ -885,11 +1097,10 @@ ResEliminateResistor(resistor, homelist)
  *-------------------------------------------------------------------------
  *
  * ResCleanNode--removes the linked lists of junctions and contacts after
- *		they are no longer needed. If the 'junk' option is used,
+ *		they are no longer needed. If the 'info' option is used,
  *		the node is eradicated.
  *
- * Results:
- *	None.
+ * Results: none.
  *
  * Side Effects: frees memory
  *
@@ -897,9 +1108,9 @@ ResEliminateResistor(resistor, homelist)
  */
 
 void
-ResCleanNode(resptr, junk, homelist1, homelist2)
+ResCleanNode(resptr, info, homelist1, homelist2)
     resNode *resptr;
-    int	    junk;
+    int	    info;
     resNode **homelist1;
     resNode **homelist2;
 {
@@ -922,7 +1133,7 @@ ResCleanNode(resptr, junk, homelist1, homelist2)
 	freeMagic((char *)jcell->je_thisj);
 	freeMagic((char *)jcell);
     }
-    if (junk == TRUE)
+    if (info == TRUE)
     {
 	if (resptr->rn_client != (ClientData)NULL)
 	{

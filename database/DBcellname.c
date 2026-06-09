@@ -152,10 +152,9 @@ DBCellRename(cellname, newname, doforce)
 
     if (doforce && ((celldef->cd_flags & CDVENDORGDS) == CDVENDORGDS))
     {
-	char *chkgdsfile;
 	bool isReadOnly;
 
-	chkgdsfile = (char *)DBPropGet(celldef, "GDS_FILE", &isReadOnly);
+	DBPropGet(celldef, "GDS_FILE", &isReadOnly);
 	/* Note that clearing GDS_FILE will also clear CDVENDORGDS flag */
 	if (isReadOnly) DBPropPut(celldef, "GDS_FILE", NULL);
 
@@ -1620,7 +1619,9 @@ dbAbutmentUseFunc(selUse, use, transform, data)
 {
     Rect bbox, refbox;
     Transform *trans;
+    PropertyRecord *proprec;
     char *propvalue;
+    char *refllx, *reflly, *refurx, *refury;
     bool found;
     bool *dolist = (bool *)data;
 
@@ -1642,32 +1643,47 @@ dbAbutmentUseFunc(selUse, use, transform, data)
     }
 
     trans = &use->cu_transform;
-    propvalue = (char *)DBPropGet(use->cu_def, "FIXED_BBOX", &found);
+    proprec = DBPropGet(use->cu_def, "FIXED_BBOX", &found);
     if (!found)
 	bbox = use->cu_def->cd_bbox;
     else
     {
-	if (sscanf(propvalue, "%d %d %d %d", &bbox.r_xbot, &bbox.r_ybot,
-		&bbox.r_xtop, &bbox.r_ytop) != 4)
+	if ((proprec->prop_type == PROPERTY_TYPE_DIMENSION) &&
+		(proprec->prop_len == 4))
+	{
+	    bbox.r_xbot = proprec->prop_value.prop_integer[0];
+	    bbox.r_ybot = proprec->prop_value.prop_integer[1];
+	    bbox.r_xtop = proprec->prop_value.prop_integer[2];
+	    bbox.r_ytop = proprec->prop_value.prop_integer[3];
+	}
+	else
+	{
+	    TxError("Unable to parse the cell's FIXED_BBOX property; using "
+			"the instance bounding box instead.\n");
 	    bbox = use->cu_def->cd_bbox;
+	}
     }
     GeoTransRect(trans, &bbox, &refbox);
+
+    /* NOTE:  Ideally, the MagWindow pointer should get passed to this routine */
+    refllx = DBWPrintValue(refbox.r_xbot, (MagWindow *)NULL, TRUE);
+    reflly = DBWPrintValue(refbox.r_ybot, (MagWindow *)NULL, FALSE);
+    refurx = DBWPrintValue(refbox.r_xtop, (MagWindow *)NULL, TRUE);
+    refury = DBWPrintValue(refbox.r_ytop, (MagWindow *)NULL, FALSE);
 
 #ifdef MAGIC_WRAPPER
     if (*dolist)
     {
 	pobj = Tcl_NewListObj(0, NULL);
-	Tcl_ListObjAppendElement(magicinterp, pobj, Tcl_NewIntObj(refbox.r_xbot));
-	Tcl_ListObjAppendElement(magicinterp, pobj, Tcl_NewIntObj(refbox.r_ybot));
-	Tcl_ListObjAppendElement(magicinterp, pobj, Tcl_NewIntObj(refbox.r_xtop));
-	Tcl_ListObjAppendElement(magicinterp, pobj, Tcl_NewIntObj(refbox.r_ytop));
+	Tcl_ListObjAppendElement(magicinterp, pobj, Tcl_NewStringObj(refllx, -1));
+	Tcl_ListObjAppendElement(magicinterp, pobj, Tcl_NewStringObj(reflly, -1));
+	Tcl_ListObjAppendElement(magicinterp, pobj, Tcl_NewStringObj(refurx, -1));
+	Tcl_ListObjAppendElement(magicinterp, pobj, Tcl_NewStringObj(refury, -1));
 	Tcl_SetObjResult(magicinterp, pobj);
     }
     else
 #endif
-    TxPrintf("Abutment box:  %d %d %d %d\n", refbox.r_xbot, refbox.r_ybot,
-	    refbox.r_xtop, refbox.r_ytop);
-	
+    TxPrintf("Abutment box:  %s %s %s %s\n", refllx, reflly, refurx, refury);
     return 0;
 }
 

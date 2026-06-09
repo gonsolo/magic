@@ -37,9 +37,8 @@ static char rcsid[] __attribute__ ((unused)) = "$Header: /usr/cvsroot/magic-8.0/
 #include "windows/windows.h"
 #include "dbwind/dbwind.h"
 #include "commands/commands.h"
-
-/* C99 compat */
 #include "graphics/graphics.h"
+#include "cif/CIFint.h"
 
 /*
  * The following variable points to the tables currently used for
@@ -357,8 +356,42 @@ DBCellCheckCopyAllPaint(scx, mask, xMask, targetUse, func)
 struct propUseDefStruct {
    CellDef *puds_source;
    CellDef *puds_dest;
+   Plane *puds_plane;		/* Mask hint plane in dest */
    Transform *puds_trans;	/* Transform from source use to dest */
+   Rect *puds_area;		/* Clip area in source coordinates */
 };
+
+/*
+ *-----------------------------------------------------------------------------
+ *
+ * dbCopyMaskHintPlaneFunc --
+ *
+ *	Translate tiles from a child mask-hint property plane into the
+ *	coordinate system of the parent, and paint the mask-hint area
+ *	into the mask-hint property plane of the parent.
+ *
+ *-----------------------------------------------------------------------------
+ */
+
+int
+dbCopyMaskHintPlaneFunc(Tile *tile,
+    TileType dinfo,
+    struct propUseDefStruct *puds)
+{
+    Transform *trans = puds->puds_trans;
+    Rect *clip = puds->puds_area;
+    Rect r, rnew;
+    Plane *plane = puds->puds_plane;
+    
+    TiToRect(tile, &r);
+    GeoClip(&r, clip);
+    if (!GEO_RECTNULL(&r))
+    {
+	GeoTransRect(trans, &r, &rnew);
+	DBPaintPlane(plane, &rnew, CIFPaintTable, (PaintUndoInfo *)NULL);
+    }
+    return 0;
+}
 
 /*
  *-----------------------------------------------------------------------------
@@ -380,63 +413,52 @@ struct propUseDefStruct {
  */
 
 int
-dbCopyMaskHintsFunc(key, value, puds)
+dbCopyMaskHintsFunc(key, proprec, puds)
     char *key;
-    ClientData value;
+    PropertyRecord *proprec;
     struct propUseDefStruct *puds;
 {
     CellDef *dest = puds->puds_dest;
     Transform *trans = puds->puds_trans;
-    char *propstr = (char *)value;
+    Rect *clip = puds->puds_area;
+    PropertyRecord *parentproprec, *newproprec;
     char *parentprop, *newvalue, *vptr;
     Rect r, rnew;
     bool propfound;
+    int i, j;
 
     if (!strncmp(key, "MASKHINTS_", 10))
     {
 	char *vptr, *lastval;
 	int lastlen;
+	Plane *plane;
 
-	/* Append to existing mask hint (if any) */
-	parentprop = (char *)DBPropGet(dest, key, &propfound);
-	newvalue = (propfound) ? StrDup((char **)NULL, parentprop) : (char *)NULL;
+	ASSERT(proprec->prop_type == PROPERTY_TYPE_PLANE, "dbCopyMaskHintsFunc");
 
-	vptr = propstr;
-	while (*vptr != '\0')
+	/* Get the existing mask hint plane in the parent cell, and
+	 * create it if it does not already exist.
+	 */
+	parentproprec = (PropertyRecord *)DBPropGet(dest, key, &propfound);
+
+	if (propfound)
+	    plane = parentproprec->prop_value.prop_plane;
+	else
 	{
-	    if (sscanf(vptr, "%d %d %d %d", &r.r_xbot, &r.r_ybot,
-			&r.r_xtop, &r.r_ytop) == 4)
-	    {
-		GeoTransRect(trans, &r, &rnew);
-
-		lastval = newvalue;
-		lastlen = (lastval) ? strlen(lastval) : 0;
-		newvalue = mallocMagic(40 + lastlen);
-
-		if (lastval)
-		    strcpy(newvalue, lastval);
-		else
-		    *newvalue = '\0';
-
-		sprintf(newvalue + lastlen, "%s%d %d %d %d", (lastval) ?  " " : "",
-			rnew.r_xbot, rnew.r_ybot, rnew.r_xtop, rnew.r_ytop);
-		if (lastval) freeMagic(lastval);
-
-		while (*vptr && !isspace(*vptr)) vptr++;
-		while (*vptr && isspace(*vptr)) vptr++;
-		while (*vptr && !isspace(*vptr)) vptr++;
-		while (*vptr && isspace(*vptr)) vptr++;
-		while (*vptr && !isspace(*vptr)) vptr++;
-		while (*vptr && isspace(*vptr)) vptr++;
-		while (*vptr && !isspace(*vptr)) vptr++;
-		while (*vptr && isspace(*vptr)) vptr++;
-	    }
-	    else break;
+	    newproprec = (PropertyRecord *)mallocMagic(sizeof(PropertyRecord));
+	    newproprec->prop_type = PROPERTY_TYPE_PLANE;
+	    newproprec->prop_len = 0;
+	    plane = DBNewPlane((ClientData)TT_SPACE);
+	    newproprec->prop_value.prop_plane = plane;
+	    DBPropPut(dest, key, newproprec);
 	}
-	if (newvalue)
-	    DBPropPut(dest, key, newvalue);
-    }
+	puds->puds_plane = plane;
 
+	/* Copy the properties from child to parent */
+	DBSrPaintArea(PlaneGetHint(proprec->prop_value.prop_plane),
+		proprec->prop_value.prop_plane,
+		clip, &CIFSolidBits, dbCopyMaskHintPlaneFunc, 
+		(ClientData)puds);
+    }
     return 0;
 }
 
@@ -468,6 +490,7 @@ DBCellCopyMaskHints(child, parent, transform)
     puds.puds_source = child->cu_def;
     puds.puds_dest = parent;
     puds.puds_trans = transform;
+    puds.puds_area = (Rect *)&TiPlaneRect;
     DBPropEnum(child->cu_def, dbCopyMaskHintsFunc, (ClientData)&puds);
 }
 
@@ -501,6 +524,7 @@ dbFlatCopyMaskHintsFunc(scx, def)
     puds.puds_source = scx->scx_use->cu_def;
     puds.puds_dest = def;
     puds.puds_trans = &scx->scx_trans;
+    puds.puds_area = &scx->scx_area;
 
     DBPropEnum(use->cu_def, dbCopyMaskHintsFunc, (ClientData)&puds);
 

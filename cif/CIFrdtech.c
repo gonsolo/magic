@@ -324,14 +324,19 @@ cifNewReadStyle(void)
     {
 	/* Destroy old style and free all memory allocated to it */
 
-	for (i=0; i<MAXCIFRLAYERS; i+=1)
+	for (i = 0; i < MAXCIFRLAYERS; i++)
 	{
 	    layer = cifCurReadStyle->crs_layers[i];
 	    if (layer != NULL)
 	    {
 		free_magic1_t mm1 = freeMagic1_init();
 		for (op = layer->crl_ops; op != NULL; op = op->co_next)
+		{
+		    if (op->co_opcode == CIFOP_MASKHINTS ||
+				op->co_opcode == CIFOP_TAGGED)
+			freeMagic((char *)op->co_client);
 		    freeMagic1(&mm1, (char *)op);
+		}
 		freeMagic1_end(&mm1);
 		freeMagic((char *)layer);
 	    }
@@ -990,6 +995,12 @@ CIFReadTechLine(
 	newOp->co_opcode = CIFOP_COPYUP;
     else if (strcmp(argv[0], "boundary") == 0)
 	newOp->co_opcode = CIFOP_BOUNDARY;
+    else if (strcmp(argv[0], "not-square") == 0)
+	newOp->co_opcode = CIFOP_NOTSQUARE;
+    else if (strcmp(argv[0], "mask-hints") == 0)
+	newOp->co_opcode = CIFOP_MASKHINTS;
+    else if (strcmp(argv[0], "tagged") == 0)
+	newOp->co_opcode = CIFOP_TAGGED;
     else
     {
 	TechError("Unknown statement \"%s\".\n", argv[0]);
@@ -1016,6 +1027,16 @@ CIFReadTechLine(
 		goto errorReturn;
 	    }
 	    break;
+        case CIFOP_MASKHINTS:
+            if (argc != 2) goto wrongNumArgs;
+            newOp->co_client = (ClientData)StrDup((char **)NULL, argv[1]);
+            break;
+        case CIFOP_TAGGED:
+            if ((argc != 2) && (argc != 3)) goto wrongNumArgs;
+            newOp->co_client = (ClientData)StrDup((char **)NULL, argv[1]);
+	    if (argc == 3)
+		CIFParseReadLayers(argv[2], &newOp->co_cifMask, TRUE);
+            break;
     }
 
     /* Link the new CIFOp onto the list. */
@@ -1099,6 +1120,7 @@ CIFReadTechFinal(void)
  *
  * ----------------------------------------------------------------------------
  */
+
 void
 CIFReadLoadStyle(
     char *stylename)

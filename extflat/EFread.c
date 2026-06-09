@@ -37,6 +37,7 @@ static char rcsid[] __attribute__ ((unused)) = "$Header: /usr/cvsroot/magic-8.0/
 #include "commands/commands.h"
 #include "database/database.h"
 #include "extflat/extflat.h"
+#include "extflat/extparse.h"
 #include "extflat/EFint.h"
 #include "extract/extract.h"
 #include "extract/extractInt.h"
@@ -48,57 +49,10 @@ static char rcsid[] __attribute__ ((unused)) = "$Header: /usr/cvsroot/magic-8.0/
 #ifndef MAGIC_WRAPPER
 /* This must match the definition for extDevTable in extract/ExtBasic.c */
 const char * const extDevTable[] = {"fet", "mosfet", "asymmetric", "bjt", "devres",
-		"devcap", "devcaprev", "vsource", "diode", "pdiode",
-		"ndiode", "subckt", "rsubckt", "msubckt", "csubckt",
-		"dsubckt", "veriloga", NULL};
+                "devcap", "devcaprev", "vsource", "diode", "pdiode",
+                "ndiode", "subckt", "rsubckt", "msubckt", "csubckt",
+                "dsubckt", "veriloga", NULL};
 #endif
-
-/*
- * The following table describes the kinds of lines
- * that may be read in a .ext file.
- */
-typedef enum
-{
-    ABSTRACT, ADJUST, ATTR, CAP, DEVICE, DIST, EQUIV, FET, KILLNODE, MERGE,
-    NODE, PARAMETERS, PORT, PRIMITIVE, RESISTOR, RESISTCLASS, RNODE, SCALE,
-    SUBCAP, SUBSTRATE, TECH, TIMESTAMP, USE, VERSION, EXT_STYLE
-} Key;
-
-static const struct
-{
-    const char	*k_name;	/* Name of first token on line */
-    Key 	 k_key;		/* Internal name for token of this type */
-    int		 k_mintokens;	/* Min total # of tokens on line of this type */
-}
-keyTable[] =
-{
-    {"abstract",	ABSTRACT,	0},	/* defines a LEF-like view */
-    {"adjust",		ADJUST,		4},
-    {"attr",		ATTR,		8},
-    {"cap",		CAP,		4},
-    {"device",		DEVICE,		11},	/* effectively replaces "fet" */
-    {"distance",	DIST,		4},
-    {"equiv",		EQUIV,		3},
-    {"fet",		FET,		12},	/* for backwards compatibility */
-    {"killnode",	KILLNODE,	2},
-    {"merge",		MERGE,		3},
-    {"node",		NODE,		7},
-    {"parameters",	PARAMETERS,	3},
-    {"port",		PORT,		8},
-    {"primitive",	PRIMITIVE,	0},	/* defines a primitive device */
-    {"resist",		RESISTOR,	4},
-    {"resistclasses",	RESISTCLASS,	1},
-    {"rnode",		RNODE,		5},
-    {"scale",		SCALE,		4},
-    {"subcap",		SUBCAP,		3},
-    {"substrate",	SUBSTRATE,	3},
-    {"tech",		TECH,		2},
-    {"timestamp",	TIMESTAMP,	2},
-    {"use",		USE,		9},
-    {"version",		VERSION,	2},
-    {"style",		EXT_STYLE,	2},
-    {0}
-};
 
 /* Data shared with EFerror.c */
 char *efReadFileName;	/* Name of file currently being read */
@@ -108,10 +62,6 @@ bool EFSaveLocs;	/* If TRUE, save location of merged top-level nodes */
 
 /* Data local to this file */
 static bool efReadDef(Def *def, bool dosubckt, bool resist, bool noscale, bool toplevel, bool isspice);
-
-/* atoCap - convert a string to a EFCapValue */
-#define	atoCap(s)	((EFCapValue)atof(s))
-
 
 /*
  * ----------------------------------------------------------------------------
@@ -325,15 +275,11 @@ readfile:
 		efBuildCap(def, argv[1], argv[2], (double) cap);
 		break;
 
-	    /* subcap node capacitance */
-	    case SUBCAP:
-		cap = cscale*atoCap(argv[2]);
-		efAdjustSubCap(def, argv[1], cap);
-		break;
-
-	    /* equiv node1 node2 */
-	    case EQUIV:
-		efBuildEquiv(def, argv[1], argv[2], resist, isspice);
+	    /* connect useid llx lly urx ury type "node" ... */
+	    case CONNECT:
+		efBuildConnect(def, atoi(argv[1]), atoi(argv[2]),
+				atoi(argv[3]), atoi(argv[4]), argv[5],
+				argv[6], argv[7]);
 		break;
 
 	    /* replaces "fet" (below) */
@@ -387,11 +333,51 @@ readfile:
 		r.r_xtop = (int)(0.5 + (float)atoi(argv[5]) * locScale);
 		r.r_ytop = (int)(0.5 + (float)atoi(argv[6]) * locScale);
 
+		if (!strcmp(argv[2], "Short"))
+		{
+		    /* Device name "Short" is a reserved name indicating
+		     * that the device does not get output but acts as a
+		     * short between the first two terminals.  Consequently,
+		     * it acts like an "equiv" statement.  However, unlike
+		     * regular "equiv" statements, it should always merge
+		     * the nodes, so do not pass "resist" to efBuildEquiv().
+		     */
+		    int argstart = 7;
+
+		    /* "Short" devices should not have parameters, but just in
+		     * case, skip over any that are found.
+		     */
+		    while (strchr(argv[argstart], '=') != NULL) argstart++;
+
+		    /* Tricky---Since "Short" devices are treated like "equiv"
+		     * statements, then when doing full R-C extraction, it's
+		     * important *not* to merge the nodes when reading the
+		     * .ext file, but only when reading the .res.ext file.
+		     * Otherwise the wrong nodes may get merged.  "resist" is
+		     * TRUE when "ext2spice extresist on" is selected, and
+		     * DoResist is set to FALSE when the .res.ext file is
+		     * opened for reading.
+		     */
+		    if (argstart + 4 >= argc)
+			efReadError("Bad terminal description for Short device\n");
+		    else if ((!resist) || (resist && (!(DoResist))))
+		    {
+			efBuildEquiv(def, argv[argstart + 1], argv[argstart + 4],
+				FALSE, isspice);
+		    }
+		    break;
+		}
+
 		if (efBuildDevice(def, (char)n, argv[2], &r, argc - 7, &argv[7]) != 0)
 		{
 		    efReadError("Incomplete terminal description for device\n");
 		    continue;
 		}
+		break;
+
+	    /* equiv node1 node2 */
+	    case EQUIV:
+		efBuildEquiv(def, argv[1], argv[2], resist, isspice);
 		break;
 
 	    /* for backwards compatibility */
@@ -423,7 +409,7 @@ readfile:
 		*/
 
 		cap = (argc > 3) ? atoCap(argv[3]) * cscale : 0;
-		efBuildConnect(def, argv[1], argv[2], (double)cap, &argv[4], argc - 4);
+		efBuildMerge(def, argv[1], argv[2], (double)cap, &argv[4], argc - 4);
 		break;
 
 	    /* node name R C x y layer a1 p1 a2 p2 ... [ attrs ] */
@@ -497,6 +483,12 @@ resistChanged:
 			efReadError("Resistance class values don't match:\n");
 			goto resistChanged;
 		    }
+		break;
+
+	    /* subcap node capacitance */
+	    case SUBCAP:
+		cap = cscale*atoCap(argv[2]);
+		efAdjustSubCap(def, argv[1], cap);
 		break;
 
 	    /* use def use-id T0 .. T5 */

@@ -120,7 +120,6 @@ ResPrintDeviceList(fp, list)
     int i;
     for (; list != NULL; list = list->rd_nextDev)
     {
-     	if (list->rd_status & RES_DEV_PLUG) continue;
 	if (fp == stdout)
 	    TxPrintf("t w %d l %d ", list->rd_width, list->rd_length);
 	else
@@ -129,11 +128,11 @@ ResPrintDeviceList(fp, list)
 	{
 	    if (list->rd_terminals[i] == NULL) continue;
 	    if (fp == stdout)
-		TxPrintf("%c (%d,%d) ",termtype[i],
+		TxPrintf("%c (%d,%d) ", termtype[i],
 	       		list->rd_terminals[i]->rn_loc.p_x,
 			list->rd_terminals[i]->rn_loc.p_y);
 	    else
-		fprintf(fp, "%c (%d,%d) ",termtype[i],
+		fprintf(fp, "%c (%d,%d) ", termtype[i],
 	       		list->rd_terminals[i]->rn_loc.p_x,
 			list->rd_terminals[i]->rn_loc.p_y);
 

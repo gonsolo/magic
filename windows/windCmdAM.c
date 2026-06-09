@@ -440,8 +440,21 @@ windCrashCmd(w, cmd)
  * Side effects:
  *	Prints coordinates (non-Tcl version)
  *	Return value set to the cursor position as a list (Tcl version)
+ *
+ * NOTE: "box position {*}[cursor]" will produce the wrong result if
+ * "units" have been left as default, because "cursor" will generate
+ * internal values and "box position" will expect lambda values.  Use
+ * "box move bl cursor" instead.
  * ----------------------------------------------------------------------------
  */
+
+#define CURSOR_INTERNAL	0
+#define CURSOR_LAMBDA	1
+#define CURSOR_USER	2
+#define CURSOR_GRID	3
+#define CURSOR_MICRONS	4
+#define CURSOR_WINDOW	5
+#define CURSOR_SCREEN	6
 
 void
 windCursorCmd(w, cmd)
@@ -449,13 +462,29 @@ windCursorCmd(w, cmd)
     TxCommand *cmd;
 {
     Point p_in, p_out;
-    int  resulttype = DBW_SNAP_INTERNAL;
+    int  resulttype, saveunits, idx;
     double cursx, cursy, oscale;
+    char *dispx, *dispy;
     DBWclientRec *crec;
 
 #ifdef MAGIC_WRAPPER
     Tcl_Obj *listxy;
 #endif
+
+    static const char * const cmdCursorOption[] =
+	{ "internal", "lambda", "user", "grid", "microns", "window", "screen",
+	  "units", 0 };
+
+    /* The original behavior was to use internal
+     * units by default.  This remains the case
+     * unless units are set with the "units"
+     * command, in which case units follow the
+     * specified units.
+     */
+    if (DBWUnits == DBW_UNITS_DEFAULT)
+	resulttype = DBW_UNITS_INTERNAL;
+    else
+	resulttype = DBWUnits;
 
     if (cmd->tx_argc == 2)
     {
@@ -465,31 +494,35 @@ windCursorCmd(w, cmd)
 		(*GrSetCursorPtr)(atoi(cmd->tx_argv[1]));
 	    return;
 	}
-	else if (*cmd->tx_argv[1] ==  'l')
-	{
-	    resulttype = DBW_SNAP_LAMBDA;
-	}
-	else if (*cmd->tx_argv[1] ==  'u')
-	{
-	    resulttype = DBW_SNAP_USER;
-	}
-	else if (*cmd->tx_argv[1] ==  'm')
-	{
-	    resulttype = DBW_SNAP_MICRONS;
-	}
-	else if (*cmd->tx_argv[1] == 'w')
-	{
-	    resulttype = -1;	// Use this value for "window"
-	}
-	else if (*cmd->tx_argv[1] == 's')
-	{
-	    resulttype = -2;	// Use this value for "screen"
-	}
-	else if (*cmd->tx_argv[1] != 'i')
-	{
-	    TxError("Usage: cursor glyphnum\n");
-	    TxError(" (or): cursor [internal | lambda | microns | user | window]\n");
-	    return;
+	else {
+	    idx = Lookup(cmd->tx_argv[1], cmdCursorOption);
+	    switch (idx)
+	    {
+		case CURSOR_INTERNAL:
+		    resulttype = DBW_UNITS_INTERNAL;
+		    break;
+		case CURSOR_LAMBDA:
+		    resulttype = DBW_UNITS_LAMBDA;
+		    break;
+		case CURSOR_USER:
+		case CURSOR_GRID:
+		    resulttype = DBW_UNITS_USER;
+		    break;
+		case CURSOR_MICRONS:
+		    resulttype = DBW_UNITS_MICRONS;
+		    break;
+		case CURSOR_WINDOW:
+		    resulttype = -1;	// Use this value for "window"
+		    break;
+		case CURSOR_SCREEN:
+		    resulttype = -2;	// Use this value for "screen"
+		    break;
+		default:
+		    TxError("Usage: cursor glyphnum\n");
+		    TxError(" (or): cursor [internal | lambda | microns | user"
+				" | window | units]\n");
+		    return;
+	    }
 	}
     }
 
@@ -506,54 +539,37 @@ windCursorCmd(w, cmd)
 	WindPointToSurface(w, &p_in, &p_out, (Rect *)NULL);
 
 	/* Snap the cursor position if snap is in effect */
-	if (DBWSnapToGrid != DBW_SNAP_INTERNAL)
+	if (DBWSnapToGrid != DBW_UNITS_INTERNAL)
 	    ToolSnapToGrid(w, &p_out, (Rect *)NULL);
     }
 
     /* Transform the result to declared units with option "lambda" or "grid" */
-    switch (resulttype) {
-	case -2:
-	case -1:
-	    cursx = (double)p_in.p_x;
-	    cursy = (double)p_in.p_y;
-	    break;
-	case DBW_SNAP_INTERNAL:
-	    cursx = (double)p_out.p_x;
-	    cursy = (double)p_out.p_y;
-	    break;
-	case DBW_SNAP_LAMBDA:
-	    cursx = (double)(p_out.p_x * DBLambda[0]) / (double)DBLambda[1];
-	    cursy = (double)(p_out.p_y * DBLambda[0]) / (double)DBLambda[1];
-	    break;
-	case DBW_SNAP_MICRONS:
-	    oscale = (double)CIFGetOutputScale(1000);
-	    cursx = (double)(p_out.p_x * oscale);
-	    cursy = (double)(p_out.p_y * oscale);
-	    break;
-	case DBW_SNAP_USER:
-	    crec = (DBWclientRec *)w->w_clientData;
-	    cursx = (double)((p_out.p_x - crec->dbw_gridRect.r_xbot)
-			/ (crec->dbw_gridRect.r_xtop - crec->dbw_gridRect.r_xbot));
-	    cursy = (double)((p_out.p_y - crec->dbw_gridRect.r_ybot)
-			/ (crec->dbw_gridRect.r_ytop - crec->dbw_gridRect.r_ybot));
-	    break;
-    }
-
-#ifdef MAGIC_WRAPPER
-    listxy = Tcl_NewListObj(0, NULL);
-    if ((cursx == round(cursx)) && (cursy == round(cursy)))
+    saveunits = DBWUnits;
+    if (resulttype < 0)
     {
-	Tcl_ListObjAppendElement(magicinterp, listxy, Tcl_NewIntObj((int)cursx));
-	Tcl_ListObjAppendElement(magicinterp, listxy, Tcl_NewIntObj((int)cursy));
+	/* Not really internal units, but that prints integer units verbatim */
+	DBWUnits = DBW_UNITS_INTERNAL;
+	cursx = (double)p_in.p_x;
+	cursy = (double)p_in.p_y;
     }
     else
     {
-	Tcl_ListObjAppendElement(magicinterp, listxy, Tcl_NewDoubleObj(cursx));
-	Tcl_ListObjAppendElement(magicinterp, listxy, Tcl_NewDoubleObj(cursy));
+	DBWUnits = resulttype;
+	cursx = (double)p_out.p_x;
+	cursy = (double)p_out.p_y;
     }
+
+    dispx = DBWPrintValue(cursx, w, TRUE);
+    dispy = DBWPrintValue(cursy, w, FALSE);
+    DBWUnits = saveunits;
+
+#ifdef MAGIC_WRAPPER
+    listxy = Tcl_NewListObj(0, NULL);
+    Tcl_ListObjAppendElement(magicinterp, listxy, Tcl_NewStringObj(dispx, -1));
+    Tcl_ListObjAppendElement(magicinterp, listxy, Tcl_NewStringObj(dispy, -1));
     Tcl_SetObjResult(magicinterp, listxy);
 #else
-    TxPrintf("%g %g\n", cursx, cursy);
+    TxPrintf("%s %s\n", dispx, dispy);
 #endif
 }
 
@@ -1040,6 +1056,7 @@ windDoMacro(w, cmd, interactive)
     bool do_help = FALSE;
     bool do_reverse = FALSE;
     char *searchterm = NULL;
+    char *clientName = NULL;
     macrodef *cMacro;
     HashTable *clienttable;
     HashEntry *h;
@@ -1057,9 +1074,25 @@ windDoMacro(w, cmd, interactive)
 
     argstart = 1;
     if (cmd->tx_argc == 1)
-	wc = DBWclientID;  /* Added by NP 11/15/04 */
+	wc = DBWclientID;	/* Default client */
     else if (cmd->tx_argc > 1)
+    {
 	wc = WindGetClient(cmd->tx_argv[1], TRUE);
+	if (wc != NULL)
+	{
+	    clientName = cmd->tx_argv[1];
+	    argstart++;
+	}
+	else
+	{
+	    /* Check if argument is a known layout button handler */
+	    if (DBWButtonHandlerIndex(cmd->tx_argv[1]) != -1)
+	    {
+		clientName = cmd->tx_argv[1];
+		argstart++;
+	    }
+	}
+    }
 
     while (cmd->tx_argc > argstart)
     {
@@ -1100,6 +1133,15 @@ windDoMacro(w, cmd, interactive)
 			wc = DBWclientID;
 		}
 		MacroCopy(wc, cmd->tx_argv[argstart]);
+
+		/* If tool name did not previously exist, then add
+		 * it to the list of known tool names, so that it
+		 * can be found later by the "macro" command.
+		 */
+		if (DBWButtonHandlerIndex(cmd->tx_argv[argstart]) == -1)
+		    DBWAddButtonHandler(cmd->tx_argv[argstart],	
+				(const cb_database_buttonhandler_t)NULL,
+				0, (const char *)NULL);
 	    }
 	    return;
 	}
@@ -1131,26 +1173,53 @@ windDoMacro(w, cmd, interactive)
 
 	    if (MacroKey(cmd->tx_argv[argstart], &verbose) == 0)
 		if (MacroKey(cmd->tx_argv[argstart + 1], &verbose) != 0)
-		{
-		    wc = 0;
-		    argstart++;
 		    return;
-		}
 	}
     }
-    else
-	argstart++;
+
+    /* If a clientName wasn't given, but wc is DBWclientID, then get
+     * the clientName from the default button handler.
+     */
+
+    if ((clientName == NULL) && (wc == DBWclientID))
+	clientName = DBWGetButtonHandler();
 
     if (cmd->tx_argc == argstart)
     {
-	if (wc == (WindClient)0)
+	if (clientName == NULL)
+	    h = NULL;
+	else
+	    h = HashLookOnly(&MacroClients, (char *)clientName);
+
+	if (h == NULL)
 	{
-	    TxError("No such client.\n");
+#ifdef MAGIC_WRAPPER
+	    Tcl_Obj *lobj;
+	    lobj = Tcl_NewListObj(0, NULL);
+#endif
+	    TxError("Cannot get macro list from current window.\n");
+#ifndef MAGIC_WRAPPER
+	    TxError("List of known macro clients:\n");
+#endif
+	    /* If clientName was not in MacroClients, then what is? */
+	    HashStartSearch(&hs);
+	    while ((h = HashNext(&MacroClients, &hs)) != NULL)
+	    {
+		char *clientName = h->h_key.h_name;
+#ifdef MAGIC_WRAPPER
+		Tcl_ListObjAppendElement(magicinterp, lobj,
+				Tcl_NewStringObj(clientName, -1));
+#else
+		TxError("%s ", clientName);
+#endif
+	    }
+#ifdef MAGIC_WRAPPER
+	    Tcl_SetObjResult(magicinterp, lobj);
+#else
+	    TxError("\n");
+#endif
 	    return;
 	}
-	h = HashLookOnly(&MacroClients, (char *)wc);
-	if (h == NULL)
-	    return;
 	else
 	{
 	    clienttable = (HashTable *)HashGetValue(h);

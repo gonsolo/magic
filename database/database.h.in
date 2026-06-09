@@ -578,6 +578,20 @@ typedef struct extRectList
    struct extRectList *r_next;
 } ExtRectList;
 
+/* Structure similar to the above, but adding a pointer to a cell use ID
+ * and a client data record which can be used to hold a region pointer.
+ */
+
+typedef struct extConnList
+{
+   char *r_useid;		/* Cell Use being connected to */
+   TileType r_type;		/* Connecting tile type in the parent */
+   Rect r_r;			/* Area of connection */
+   ClientData r_upnode;		/* Parent node making the connection */
+   ClientData r_downnode;	/* Child node making the connection */
+   struct extConnList *r_next;	/* Next item in the linked list */
+} ExtConnList;
+
 /* -------------------- Search context information -------------------- */
 
 /* Search contexts are used in hierarchical searches */
@@ -651,6 +665,7 @@ typedef struct treeFilter
 #define TF_LABEL_ATTACH_NOT_SE	0x10	/* Same as above, ignore tile SE corner */
 #define TF_LABEL_ATTACH_NOT_SW	0x20	/* Same as above, ignore tile SW corner */
 #define TF_LABEL_ATTACH_CORNER	0x3C	/* Mask of the four types above */
+#define TF_LABEL_REVERSE_SEARCH 0x40	/* Search children before parent */
 
 /* To do:  Make the tpath entries dynamically allocated */
 #define FLATTERMSIZE 4096		/* Used for generating flattened labels */
@@ -704,6 +719,25 @@ struct conSrArg2
 
 #define CSA2_LIST_SIZE 65536            /* Number of entries per list */
 
+/* ------------------------  Properties  ------------------------------ */
+
+/* Note that the property record is a single allocated block large enough
+ * to hold the string or integer list, and can be freed as a single block.
+ * The array bounds, like those of lab_text for labels, are placeholders.
+ */
+
+typedef struct
+{
+    int		prop_type;	/* See codes below; e.g., PROPERTY_TYPE_STRING */
+    int		prop_len;	/* String length or number of values */
+    union {
+	char  prop_string[8];	/* For PROPERTY_TYPE_STRING */
+	int   prop_integer[2];	/* For PROPERTY_TYPE_INTEGER or _DIMENSION */
+	dlong prop_double[1];	/* For PROPERTY_TYPE_DOUBLE */
+	Plane *prop_plane;	/* For PROPERTY_TYPE_PLANE */
+    } prop_value;
+} PropertyRecord;
+
 /* -------------- Undo information passed to DBPaintPlane ------------- */
 
 typedef struct
@@ -735,6 +769,14 @@ typedef struct
 #define PAINT_NORMAL	0	/* Normal paint procedure */
 #define PAINT_MARK	1	/* Mark tiles that are painted */
 #define PAINT_XOR	2	/* Use with XOR function to prevent double-painting */
+
+/* ---------------------- Codes for properties -------------------------*/
+
+#define PROPERTY_TYPE_STRING	0	/* ASCII string property */
+#define PROPERTY_TYPE_INTEGER	1	/* Fixed integer property */
+#define PROPERTY_TYPE_DIMENSION	2	/* Integer property that scales with units */
+#define PROPERTY_TYPE_DOUBLE	3	/* Double-long integer (for file positions) */
+#define PROPERTY_TYPE_PLANE	4	/* A tile plane structure */
 
 /* -------------------- Exported procedure headers -------------------- */
 
@@ -921,7 +963,9 @@ extern void DBFreePaintPlane();
 
     /* Cell properties */
 extern void DBPropPut();
-extern ClientData DBPropGet();
+extern PropertyRecord *DBPropGet();
+extern char *DBPropGetString();
+extern dlong DBPropGetDouble();
 extern int DBPropEnum();
 extern void DBPropClearAll();
 
@@ -1019,6 +1063,7 @@ extern int DBLambda[2];
 /* -------------------- Exported magic file suffix -------------------- */
 
 extern char *DBSuffix;		/* Suffix appended to all Magic cell names */
+extern bool DBPropCompat;	/* Backwards-compatible properties */
 
 /* -------------------- User Interface Stuff -------------------------- */
 
@@ -1030,6 +1075,19 @@ extern unsigned char DBVerbose;	/* If 0, don't print any messages	*/
 #define DB_VERBOSE_ERR	1
 #define DB_VERBOSE_WARN	2
 #define DB_VERBOSE_ALL	3
+
+/* ---------- Definitions for expanding/unexpanding cells --------------*/
+
+/* Selection expansion flags */
+#define DB_EXPAND_MASK	 	3	/* 1 = expand, 0 = unexpand, 2 = toggle */
+#define DB_EXPAND_SURROUND_MASK	4	/* 1 = surround, 0 = touch */
+
+/* Selection expansion values */
+#define DB_EXPAND      	   0
+#define DB_UNEXPAND        1
+#define DB_EXPAND_TOGGLE   2
+#define DB_EXPAND_SURROUND 4
+#define DB_EXPAND_OVERLAP  0
 
 /* ------------------ Exported technology variables ------------------- */
 

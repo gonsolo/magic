@@ -470,13 +470,15 @@ SelectArea(scx, types, xMask, globmatch)
 
     if (TTMaskHasType(types, L_LABEL))
     {
+	TTMaskClearType(types, L_LABEL);
+	if (TTMaskIsZero(types)) types = &DBAllButSpaceAndDRCBits;
+
 	if (globmatch != NULL)
-	    DBCellCopyGlobLabels(scx, &DBAllTypeBits, xMask, SelectUse, &labelArea,
+	    DBCellCopyGlobLabels(scx, types, xMask, SelectUse, &labelArea,
 		    globmatch);
 	else
-	    DBCellCopyAllLabels(scx, &DBAllTypeBits, xMask, SelectUse, &labelArea);
+	    DBCellCopyAllLabels(scx, types, xMask, SelectUse, &labelArea);
     }
-    else (void) DBCellCopyAllLabels(scx, types, xMask, SelectUse, &labelArea);
 
     /* Select cell uses. */
 
@@ -835,6 +837,8 @@ chunkdone:
 	if (DBIsContact(type))
 	    TTMaskSetOnlyType(&typeMask, type);
 
+	/* Allow labels to be selected as part of the chunk */
+	TTMaskSetType(&typeMask, L_LABEL);
 	SelectArea(&newscx, &typeMask, xMask, NULL);
       }
 

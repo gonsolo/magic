@@ -50,7 +50,6 @@ static char rcsid[] __attribute__ ((unused)) = "$Header: /usr/cvsroot/magic-8.0/
 
 /* Forward declarations */
 int extOutputUsesFunc();
-FILE *extFileOpen();
 
 Plane* extCellFile();
 void extHeader();
@@ -77,18 +76,19 @@ void extHeader();
  */
 
 Plane *
-ExtCell(def, outName, doLength)
+ExtCell(def, outName, isTop)
     CellDef *def;	/* Cell being extracted */
     char *outName;	/* Name of output file; if NULL, derive from def name */
-    bool doLength;	/* If TRUE, extract pathlengths from drivers to
-			 * receivers (the names are stored in ExtLength.c).
-			 * Should only be TRUE for the root cell in a
-			 * hierarchy.
-			 */
+    bool isTop;		/* If TRUE, cell is the top level cell */
 {
     char *filename;
     FILE *f = NULL;
     Plane *savePlane;
+    bool noextract;
+
+    /* If marked abstract, then don't extract the cell */
+    DBPropGet(def, "noextract", &noextract);
+    if (noextract) return extPrepSubstrate(def);
 
     /* Incremental extraction:  If the cell is marked for no extraction,
      * then just prepare the substrate plane and return it to the caller.
@@ -96,7 +96,7 @@ ExtCell(def, outName, doLength)
     if (def->cd_flags & CDNOEXTRACT)
 	return extPrepSubstrate(def);
 
-    f = extFileOpen(def, outName, "w", &filename);
+    f = ExtFileOpen(def, outName, "w", &filename);
 
     TxPrintf("Extracting %s into %s:\n", def->cd_name, filename);
 
@@ -112,7 +112,7 @@ ExtCell(def, outName, doLength)
     }
 
     extNumErrors = extNumWarnings = 0;
-    savePlane = extCellFile(def, f, doLength);
+    savePlane = extCellFile(def, f, isTop);
     if (f != NULL) fclose(f);
 
     if (extNumErrors > 0 || extNumWarnings > 0)
@@ -132,7 +132,7 @@ ExtCell(def, outName, doLength)
 /*
  * ----------------------------------------------------------------------------
  *
- * extFileOpen --
+ * ExtFileOpen --
  *
  * Open the .ext file corresponding to a .mag file.
  * If def->cd_file is non-NULL, the .ext file is just def->cd_file with
@@ -150,7 +150,7 @@ ExtCell(def, outName, doLength)
  */
 
 FILE *
-extFileOpen(def, file, mode, prealfile)
+ExtFileOpen(def, file, mode, prealfile)
     CellDef *def;	/* Cell whose .ext file is to be written */
     char *file;		/* If non-NULL, open 'name'.ext; otherwise,
 			 * derive filename from 'def' as described
@@ -472,13 +472,10 @@ ExtRevertSubstrate(def, savePlane)
  */
 
 Plane *
-extCellFile(def, f, doLength)
+extCellFile(def, f, isTop)
     CellDef *def;	/* Def to be extracted */
     FILE *f;		/* Output to this file */
-    bool doLength;	/* TRUE if we should extract driver-receiver path
-			 * length information for this cell (see ExtCell
-			 * for more details).
-			 */
+    bool isTop;		/* TRUE if the cell is the top level cell */
 {
     NodeRegion *reg;
     Plane *saveSub;
@@ -489,11 +486,25 @@ extCellFile(def, f, doLength)
     /* If "extract do unique" was specified, then make labels in the
      * cell unique.
      */
+
     if (ExtOptions & EXT_DOUNIQUE)
-	extUniqueCell(def, EXT_UNIQ_TEMP);
+    {
+	if (ExtOptions & EXT_DOUNIQNOTOPPORTS)
+	{
+	    if (isTop)
+		extUniqueCell(def, EXT_UNIQ_TEMP_NOPORTS);
+	    else
+		extUniqueCell(def, EXT_UNIQ_TEMP);
+	}
+	else
+	    extUniqueCell(def, EXT_UNIQ_TEMP);
+    }
 
     /* Prep any isolated substrate areas */
-    saveSub = extPrepSubstrate(def);
+    if (ExtOptions & EXT_DOEXTRESIST)
+	saveSub = extResPrepSubstrate(def);
+    else
+	saveSub = extPrepSubstrate(def);
 
     /* Remove any label markers that were made by a previous extraction */
     for (lab = def->cd_labels; lab; lab = lab->lab_next)
@@ -517,7 +528,7 @@ extCellFile(def, f, doLength)
     ExtResetTiles(def, CLIENTDEFAULT);
 
     /* Final pass: extract length information if desired */
-    if (!SigInterruptPending && doLength && (ExtOptions & EXT_DOLENGTH))
+    if (!SigInterruptPending && isTop && (ExtOptions & EXT_DOLENGTH))
 	extLength(extParentUse, f);
 
     UndoEnable();
@@ -592,7 +603,7 @@ extHeader(def, f)
     /* are to be passed to instances of the cell	*/
     /* (created by defining property "parameter")	*/
 
-    propvalue = (char *)DBPropGet(def, "parameter", &propfound);
+    propvalue = DBPropGetString(def, "parameter", &propfound);
     if (propfound)
     {
 	// Use device parameter table to store the cell def parameters,

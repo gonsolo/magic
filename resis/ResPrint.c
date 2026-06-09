@@ -17,6 +17,7 @@ static char rcsid[] __attribute__ ((unused)) = "$Header: /usr/cvsroot/magic-8.0/
 #include "database/database.h"
 #include "utils/malloc.h"
 #include "textio/textio.h"
+#include "extflat/extparse.h"
 #include "extract/extract.h"
 #include "extract/extractInt.h"
 #include "windows/windows.h"
@@ -31,9 +32,6 @@ static char rcsid[] __attribute__ ((unused)) = "$Header: /usr/cvsroot/magic-8.0/
 
 #define MAXNAME			1000
 #define KV_TO_mV		1000000
-
-extern ResSimNode *ResInitializeNode();
-
 
 /*
  *-------------------------------------------------------------------------
@@ -54,10 +52,10 @@ ResPrintExtRes(outextfile, resistors, nodename)
     char	*nodename;
 
 {
-    int	        nodenum=0;
+    int	        nodenum = 0;
     char	newname[MAXNAME];
     HashEntry  *entry;
-    ResSimNode *node, *ResInitializeNode();
+    ResExtNode *node;
 
     for (; resistors != NULL; resistors = resistors->rr_nextResistor)
     {
@@ -72,7 +70,7 @@ ResPrintExtRes(outextfile, resistors, nodename)
 	{
      	    (void)sprintf(newname, "%s%s%d", nodename, ".r", nodenum++);
      	    entry = HashFind(&ResNodeTable, newname);
-	    node = ResInitializeNode(entry);
+	    node = ResExtInitNode(entry);
 	    resistors->rr_connection1->rn_name = node->name;
 	    node->oldname = nodename;
 	}
@@ -80,7 +78,7 @@ ResPrintExtRes(outextfile, resistors, nodename)
 	{
      	    (void)sprintf(newname, "%s%s%d", nodename, ".r", nodenum++);
      	    entry = HashFind(&ResNodeTable, newname);
-	    node = ResInitializeNode(entry);
+	    node = ResExtInitNode(entry);
 	    resistors->rr_connection2->rn_name = node->name;
 	    node->oldname = nodename;
 	}
@@ -175,13 +173,13 @@ ResPrintExtDev(outextfile, devices)
 		    fprintf(outextfile, " \"%s\" %d %s",
 			    devices->gate->name,
 			    devices->layout->rd_length * 2,
-			    devices->rs_gattr);
+			    (*devices->rs_gattr == '\0') ? "0" : devices->rs_gattr);
 
 		if (devices->source != NULL)
 		    fprintf(outextfile, " \"%s\" %d %s",
 			    devices->source->name,
 			    devices->layout->rd_width,
-			    devices->rs_sattr);
+			    (*devices->rs_sattr == '\0') ? "0" : devices->rs_sattr);
 
 		/* Don't write drain values for 2-terminal devices */
 		if (devptr->exts_deviceSDCount > 1)
@@ -189,7 +187,7 @@ ResPrintExtDev(outextfile, devices)
 		    	fprintf(outextfile, " \"%s\" %d %s",
 				devices->drain->name,
 				devices->layout->rd_width,
-				devices->rs_dattr);
+				(*devices->rs_dattr == '\0') ? "0" : devices->rs_dattr);
 
 		fprintf(outextfile, "\n");
 	    }
@@ -215,13 +213,13 @@ void
 ResPrintExtNode(outextfile, nodelist, node)
 	FILE	*outextfile;
 	resNode	*nodelist;
-	ResSimNode *node;
+	ResExtNode *node;
 {
     char       *nodename = node->name;
     int		nodenum = 0;
     char	newname[MAXNAME+32], tmpname[MAXNAME], *cp;
     HashEntry  *entry;
-    ResSimNode *newnode, *ResInitializeNode();
+    ResExtNode *newnode;
     bool	DoKillNode = TRUE;
     bool	NeedFix = FALSE;
     resNode	*snode;
@@ -263,14 +261,14 @@ ResPrintExtNode(outextfile, nodelist, node)
     {
 	if (snode->rn_name == NULL)
 	{
-	    (void)sprintf(tmpname,"%s",nodename);
+	    (void)sprintf(tmpname, "%s", nodename);
 
 	    cp = tmpname + strlen(tmpname) - 1;
             if (*cp == '!' || *cp == '#') *cp = '\0';
 
      	    (void)sprintf(newname, "%s%s%d", tmpname, ".n", nodenum++);
      	    entry = HashFind(&ResNodeTable, newname);
-	    newnode = ResInitializeNode(entry);
+	    newnode = ResExtInitNode(entry);
 	    snode->rn_name = newnode->name;
 	    newnode->oldname = nodename;
 	}
@@ -290,6 +288,13 @@ ResPrintExtNode(outextfile, nodelist, node)
 
     if (NeedFix)
     {
+	if (nodelist == NULL)
+	{
+	    TxError("Error:  Orphaned node \"%s\" not output.\n",
+			node->name);
+	    return;
+	}
+
 	/* Patch up the output netlist for an orphaned node by
 	 * creating a zero-valued resistance between it and the
 	 * first subnode (arbitrary connection).  Flag a warning.
@@ -316,16 +321,16 @@ ResPrintExtNode(outextfile, nodelist, node)
  */
 
 void
-ResPrintStats(goodies, name)
-    ResGlobalParams	*goodies;
-    char		*name;
+ResPrintStats(resisdata, name)
+    ResisData	*resisdata;
+    char	*name;
 {
     static int	totalnets = 0, totalnodes = 0, totalresistors = 0;
     int nodes, resistors;
     resNode	*node;
     resResistor *res;
 
-    if (goodies == NULL)
+    if (resisdata == NULL)
     {
      	  TxError("nets:%d nodes:%d resistors:%d\n",
 	  	  totalnets, totalnodes, totalresistors);
@@ -337,13 +342,13 @@ ResPrintStats(goodies, name)
     nodes = 0;
     resistors = 0;
     totalnets++;
-    for (node = ResNodeList; node != NULL; node=node->rn_more)
+    for (node = ResNodeList; node != NULL; node = node->rn_more)
 
     {
      	nodes++;
 	totalnodes++;
     }
-    for (res = ResResList; res != NULL; res=res->rr_nextResistor)
+    for (res = ResResList; res != NULL; res = res->rr_nextResistor)
     {
      	resistors++;
 	totalresistors++;
@@ -411,16 +416,16 @@ ResPrintFHNodes(fp, nodelist, nodename, nidx, celldef)
 	else
 	{
 	    HashEntry  *entry;
-	    ResSimNode *simnode;
+	    ResExtNode *extnode;
 
 	    /* If we process another sim file node while doing this	*/
 	    /* one, mark it as status "REDUNDANT" so we don't duplicate	*/
 	    /* the entry.						*/
 
      	    entry = HashFind(&ResNodeTable, nodeptr->rn_name);
-	    simnode = (ResSimNode *)HashGetValue(entry);
-	    if (simnode != NULL)
-		simnode->status |= REDUNDANT;
+	    extnode = (ResExtNode *)HashGetValue(entry);
+	    if (extnode != NULL)
+		extnode->status |= REDUNDANT;
 	}
 	resWriteNodeName(fp, nodeptr);
 

@@ -781,38 +781,81 @@ cmdEraseCellsFunc(
  * Implement the "expand" command.
  *
  * Usage:
- *	expand
- *	expand toggle
+ *	expand [selection|surround|overlap|all] [toggle]
+ *
+ *	"selection" expands cells in the selection.  All other options
+ *	expand cells in the layout.  "all" expands all cells in the
+ *	layout.  "surround" expands cells which the cursor box
+ *	surrounds completely, and "overlap" expands cells which the
+ *	cursor box overlaps.
+ *
+ *	If "toggle" is specified, flips the expanded/unexpanded status.
+ *	Cells which were expanded are unexpanded, and cells which were
+ *	unexpanded are expanded.
+ *
+ *	For backwards compatibility:
+ *	"expand" alone implements "expand overlap".
+ *	"expand toggle" implements "expand selection toggle".
+ *
+ *	Also see:  CmdUnexpand
  *
  * Results:
  *	None.
  *
  * Side effects:
- *	If "toggle" is specified, flips the expanded/unexpanded status
- *	of all selected cells.  Otherwise, aren't any unexpanded cells
- *	left under the box.  May read cells in from disk, and updates
- *	bounding boxes that have changed.
+ *	Expansion state of cells is changed.  May read cells in from
+ *	disk, and update bounding boxes that have changed.
  *
  * ----------------------------------------------------------------------------
  */
+
+#define EXPAND_SELECTION      0
+#define EXPAND_SURROUND       1
+#define EXPAND_OVERLAP        2
+#define EXPAND_ALL            3
+#define EXPAND_HELP           4
 
 void
 CmdExpand(
     MagWindow *w,
     TxCommand *cmd)
 {
-    int windowMask, boxMask, d;
+    int windowMask, boxMask, d, option;
+    bool doToggle = FALSE;
+    const char * const *msg;
     Rect rootRect;
     CellUse *rootBoxUse;
     CellDef *rootBoxDef;
+
     int cmdExpandFunc(CellUse *use, int windowMask);		/* Forward reference. */
 
-    if (cmd->tx_argc > 2 || (cmd->tx_argc == 2
-	&& (strncmp(cmd->tx_argv[1], "toggle", strlen(cmd->tx_argv[1])) != 0)))
+    static const char * const cmdExpandOption[] = {
+	"selection	expand cell instances in the selection",
+	"surround	expand cell instances which the cursor box surrounds",
+	"overlap	expand cell instances which the cursor box overlaps",
+	"all		expand all cell instances",
+	NULL
+    };
+
+    if (cmd->tx_argc > 1)
     {
-	TxError("Usage: %s or %s toggle\n", cmd->tx_argv[0], cmd->tx_argv[0]);
-	return;
+	if (!strncmp(cmd->tx_argv[cmd->tx_argc - 1], "toggle",
+			strlen(cmd->tx_argv[cmd->tx_argc - 1])))
+	{
+	    doToggle = TRUE;
+	    cmd->tx_argc--;
+	}
     }
+
+    if (cmd->tx_argc > 1)
+    {
+	option = Lookup(cmd->tx_argv[1], cmdExpandOption);
+	if (option < 0) option = EXPAND_HELP;
+    }
+    else
+	option = EXPAND_OVERLAP;
+
+    if (option == EXPAND_HELP) goto badusage;
 
     windCheckOnlyWindow(&w, DBWclientID);
     if (w == (MagWindow *) NULL)
@@ -844,23 +887,95 @@ CmdExpand(
             WindScale(d, 1);
 	    TxPrintf("expand: rescaled by %d\n", d);
 	    d = DBLambda[1];
-	    if (cmd->tx_argc == 2) break;	/* Don't toggle twice */
+	    if (doToggle) break;	/* Don't toggle twice */
 	}
 	(void) ToolGetBoxWindow(&rootRect, &boxMask);
 
-	if (cmd->tx_argc == 2)
-	    SelectExpand(windowMask);
-	else
+	if (option != EXPAND_SELECTION)
 	{
 	    if ((boxMask & windowMask) != windowMask)
 	    {
 		TxError("The box isn't in the same window as the cursor.\n");
 		return;
 	    }
-	    DBExpandAll(rootBoxUse, &rootRect, windowMask,
-			TRUE, cmdExpandFunc, (ClientData)(pointertype) windowMask);
+	}
+
+	switch (option)
+	{
+	    case EXPAND_SELECTION:
+		SelectExpand(windowMask,
+			(doToggle) ? DB_EXPAND_TOGGLE : DB_EXPAND,
+			(Rect *)NULL);
+		break;
+	    case EXPAND_OVERLAP:
+		if (doToggle)
+		{
+		    DBExpandAll(rootBoxUse, &rootRect, windowMask,
+				DB_EXPAND_TOGGLE | DB_EXPAND_OVERLAP,
+				cmdExpandFunc, (ClientData)(pointertype)windowMask);
+		    SelectExpand(windowMask,
+			DB_EXPAND_TOGGLE | DB_EXPAND_OVERLAP,
+			&rootRect);
+		}
+		else
+		{
+		    DBExpandAll(rootBoxUse, &rootRect, windowMask,
+				DB_EXPAND | DB_EXPAND_OVERLAP,
+				cmdExpandFunc, (ClientData)(pointertype)windowMask);
+		    SelectExpand(windowMask,
+			DB_EXPAND | DB_EXPAND_OVERLAP,
+			&rootRect);
+		}
+		break;
+	    case EXPAND_SURROUND:
+		if (doToggle)
+		{
+		    DBExpandAll(rootBoxUse, &rootRect, windowMask,
+				DB_EXPAND_TOGGLE | DB_EXPAND_SURROUND,
+				cmdExpandFunc, (ClientData)(pointertype)windowMask);
+		    SelectExpand(windowMask,
+			DB_EXPAND_TOGGLE | DB_EXPAND_SURROUND,
+			&rootRect);
+		}
+		else
+		{
+		    DBExpandAll(rootBoxUse, &rootRect, windowMask,
+				DB_EXPAND | DB_EXPAND_SURROUND,
+				cmdExpandFunc, (ClientData)(pointertype)windowMask);
+		    SelectExpand(windowMask,
+			DB_EXPAND | DB_EXPAND_SURROUND,
+			&rootRect);
+		}
+		break;
+	    case EXPAND_ALL:
+		if (doToggle)
+		{
+		    DBExpandAll(rootBoxUse, &TiPlaneRect, windowMask,
+				DB_EXPAND | DB_EXPAND_OVERLAP,
+				cmdExpandFunc, (ClientData)(pointertype)windowMask);
+		    SelectExpand(windowMask,
+			DB_EXPAND | DB_EXPAND_OVERLAP,
+			(Rect *)NULL);
+		}
+		else
+		{
+		    DBExpandAll(rootBoxUse, &TiPlaneRect, windowMask,
+				DB_EXPAND | DB_EXPAND_OVERLAP,
+				cmdExpandFunc, (ClientData)(pointertype)windowMask);
+		    SelectExpand(windowMask,
+			DB_EXPAND | DB_EXPAND_OVERLAP,
+			(Rect *)NULL);
+		}
+		break;
 	}
     } while (d != DBLambda[1]);
+
+    return;
+
+badusage:
+    for (msg = &(cmdExpandOption[0]); *msg != NULL; msg++)
+	TxPrintf("    %s\n", *msg);
+    TxPrintf("    toggle	Toggle the visibility of cell instances.\n");
 }
 
 /* This function is called for each cell whose expansion status changed.
@@ -925,12 +1040,14 @@ cmdExpandFunc(
 #define	DOALL		1
 #define	DOCAPACITANCE	2
 #define	DOCOUPLING	3
-#define	DOLENGTH	4
-#define	DOLOCAL		5
-#define	DORESISTANCE	6
-#define	DOLABELCHECK	7
-#define	DOALIASES	8
-#define	DOUNIQUE	9
+#define	DOEXTRESIST	4
+#define	DOLENGTH	5
+#define	DOLOCAL		6
+#define	DORESISTANCE	7
+#define	DOLABELCHECK	8
+#define	DOALIASES	9
+#define	DOUNIQUE       10
+#define	DOEXTRESIST2   11
 
 #define	LENCLEAR	0
 #define	LENDRIVER	1
@@ -973,12 +1090,14 @@ CmdExtract(
 	"all			all options",
 	"capacitance		extract substrate capacitance",
 	"coupling		extract coupling capacitance",
+	"extresist		extract resistance",
 	"length			compute driver-receiver pathlengths",
 	"local			put all generated files in the current directory",
-	"resistance		estimate resistance",
+	"lumped			estimate lumped resistance",
 	"labelcheck		check for connections through sticky labels",
 	"aliases		output all net name aliases",
-	"unique			ensure unique node names during extraction",
+	"unique	 [notopports]	ensure unique node names during extraction",
+	"resistance		extract resistance (same as \"do extresist\")",
 	NULL
     };
     static const char * const cmdExtLength[] =
@@ -1122,12 +1241,13 @@ CmdExtract(
 	    }
 	    else if (argc == 2)
 	    {
+		char *halodisp;
+		halodisp = DBWPrintValue(ExtCurStyle->exts_sideCoupleHalo,
+			w, TRUE);
 #ifdef MAGIC_WRAPPER
-		Tcl_Obj *tobj;
-		tobj = Tcl_NewIntObj(ExtCurStyle->exts_sideCoupleHalo);
-		Tcl_SetObjResult(magicinterp, tobj);
+		Tcl_SetObjResult(magicinterp, Tcl_NewStringObj(halodisp, -1));
 #else
-		TxPrintf("Side overlap halo is %d\n", ExtCurStyle->exts_sideCoupleHalo);
+		TxPrintf("Side overlap halo is %s\n", halodisp);
 #endif
 		return;
 	    }
@@ -1152,12 +1272,12 @@ CmdExtract(
 	    }
 	    else if (argc == 2)
 	    {
+		char *stepdisp;
+		stepdisp = DBWPrintValue(ExtCurStyle->exts_stepSize, w, TRUE);
 #ifdef MAGIC_WRAPPER
-		Tcl_Obj *tobj;
-		tobj = Tcl_NewIntObj(ExtCurStyle->exts_stepSize);
-		Tcl_SetObjResult(magicinterp, tobj);
+		Tcl_SetObjResult(magicinterp, Tcl_NewStringObj(stepdisp, -1));
 #else
-		TxPrintf("Extraction step size is %d\n", ExtCurStyle->exts_stepSize);
+		TxPrintf("Extraction step size is %s\n", stepdisp);
 #endif
 		return;
 	    }
@@ -1279,10 +1399,12 @@ CmdExtract(
 		TxPrintf("%s capacitance\n", OPTSET(EXT_DOCAPACITANCE));
 		TxPrintf("%s coupling\n", OPTSET(EXT_DOCOUPLING));
 		TxPrintf("%s length\n", OPTSET(EXT_DOLENGTH));
-		TxPrintf("%s resistance\n", OPTSET(EXT_DORESISTANCE));
+		TxPrintf("%s lumped R\n", OPTSET(EXT_DORESISTANCE));
 		TxPrintf("%s label check\n", OPTSET(EXT_DOLABELCHECK));
 		TxPrintf("%s aliases\n", OPTSET(EXT_DOALIASES));
 		TxPrintf("%s unique\n", OPTSET(EXT_DOUNIQUE));
+		TxPrintf("%s unique notopports\n", OPTSET(EXT_DOUNIQNOTOPPORTS));
+		TxPrintf("%s resistance (extresist)\n", OPTSET(EXT_DOEXTRESIST));
 		return;
 #undef	OPTSET
 	    }
@@ -1312,7 +1434,19 @@ CmdExtract(
 		case DORESISTANCE:	option = EXT_DORESISTANCE; break;
 		case DOLABELCHECK:	option = EXT_DOLABELCHECK; break;
 		case DOALIASES:		option = EXT_DOALIASES; break;
-		case DOUNIQUE:		option = EXT_DOUNIQUE; break;
+		case DOEXTRESIST:
+		case DOEXTRESIST2:	option = EXT_DOEXTRESIST; break;
+		case DOUNIQUE:
+		    if (argc == 4)
+		    {
+			if (!strncmp(argv[3], "notop", 5))
+			    option = EXT_DOUNIQNOTOPPORTS | EXT_DOUNIQUE;
+			else
+			    TxError("Usage:  extract do unique [notopports]\n");
+		    }
+		    else
+			option = EXT_DOUNIQUE;
+		    break;
 		case DOLOCAL:
 		    /* "extract do local" and "extract no local" are kept for
 		     * backwards compatibility, but now effectively implement

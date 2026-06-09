@@ -61,10 +61,10 @@ ResSanityChecks(nodename, resistorList, nodeList, devlist)
     {
      	resSanityStack = StackNew(64);
     }
-    for (node = nodeList; node != NULL; node=node->rn_more)
+    for (node = nodeList; node != NULL; node = node->rn_more)
     {
      	node->rn_status &= ~RES_REACHED_NODE;
-	if (node->rn_why == RES_NODE_ORIGIN)
+	if (node->rn_why & RES_NODE_ORIGIN)
 	  		STACKPUSH((ClientData) node, resSanityStack);
     }
     for (resistor = resistorList; resistor != NULL; resistor = resistor->rr_nextResistor)
@@ -112,7 +112,6 @@ ResSanityChecks(nodename, resistorList, nodeList, devlist)
      {
      	int i;
 
-	if (dev->rd_status & RES_DEV_PLUG) continue;
 	reached = FALSE;
 	for (i = 0; i != dev->rd_nterms; i++)
 	{
@@ -134,7 +133,7 @@ ResSanityChecks(nodename, resistorList, nodeList, devlist)
 	}
     }
     foundorigin = 0;
-    for (node = nodeList; node != NULL; node=node->rn_more)
+    for (node = nodeList; node != NULL; node = node->rn_more)
     {
      	if ((node->rn_status & RES_REACHED_NODE) == 0)
 	{

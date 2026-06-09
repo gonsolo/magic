@@ -25,6 +25,8 @@
 #ifndef _MAGIC__TEXTIO__TEXTIO_H
 #define _MAGIC__TEXTIO__TEXTIO_H
 
+#include <stdarg.h> /* va_list */
+
 #include "utils/magic.h"
 #include "utils/dqueue.h" /* DQueue */
 
@@ -94,6 +96,7 @@ extern char TxInterruptChar;		/* The current interrupt character */
 
 /* command procedures */
 extern void TxDispatch(FILE *f);
+extern int TxDispatchString(const char *str, bool quiet);
 
 /* C99 compat */
 extern void TxMore(const char *mesg);

@@ -166,9 +166,9 @@ CIFPaintLayer(
     scx.scx_use = CIFDummyUse;
     scx.scx_trans = GeoIdentityTransform;
     (void) DBTreeSrTiles(&scx, &DBAllButSpaceAndDRCBits, 0,
-	cifHierCopyFunc, (ClientData) CIFComponentDef);
+		cifHierCopyFunc, (ClientData) CIFComponentDef);
     CIFCopyMaskHints(&scx, CIFComponentDef);
-    DBTreeSrCells(&scx, 0, cifHierCopyMaskHints,
+    DBTreeSrCells(&scx, 0, CIFCopyMaskHints,
                 (ClientData)CIFComponentDef);
 
     oldCount = DBWFeedbackCount;
@@ -287,9 +287,9 @@ CIFSeeLayer(
     scx.scx_use = CIFDummyUse;
     scx.scx_trans = GeoIdentityTransform;
     (void) DBTreeSrTiles(&scx, &DBAllButSpaceAndDRCBits, 0,
-	cifHierCopyFunc, (ClientData) CIFComponentDef);
+		cifHierCopyFunc, (ClientData) CIFComponentDef);
     CIFCopyMaskHints(&scx, CIFComponentDef);
-    DBTreeSrCells(&scx, 0, cifHierCopyMaskHints,
+    DBTreeSrCells(&scx, 0, CIFCopyMaskHints,
                 (ClientData)CIFComponentDef);
 
     oldCount = DBWFeedbackCount;
@@ -459,9 +459,9 @@ CIFCoverageLayer(
     scx.scx_use = CIFDummyUse;
     scx.scx_trans = GeoIdentityTransform;
     (void) DBTreeSrTiles(&scx, &DBAllButSpaceAndDRCBits, 0,
-	cifHierCopyFunc, (ClientData) CIFComponentDef);
+		cifHierCopyFunc, (ClientData) CIFComponentDef);
     CIFCopyMaskHints(&scx, CIFComponentDef);
-    DBTreeSrCells(&scx, 0, cifHierCopyMaskHints,
+    DBTreeSrCells(&scx, 0, CIFCopyMaskHints,
                 (ClientData)CIFComponentDef);
 
     CIFGen(CIFComponentDef, rootDef, area, CIFPlanes, &depend, TRUE, TRUE,
@@ -504,10 +504,10 @@ CIFCoverageLayer(
     }
     else
     {
-    	TxPrintf("%s Area = %lld CIF units^2\n", doBox ?  "Cursor Box" :
+    	TxPrintf("%s Area = %"DLONG_PREFIX"d CIF units^2\n", doBox ?  "Cursor Box" :
 		"Cell", btotal);
-    	TxPrintf("Layer Bounding Area = %lld CIF units^2\n", atotal);
-    	TxPrintf("Layer Total Area = %lld CIF units^2\n", cstats.coverage);
+    	TxPrintf("Layer Bounding Area = %"DLONG_PREFIX"d CIF units^2\n", atotal);
+    	TxPrintf("Layer Total Area = %"DLONG_PREFIX"d CIF units^2\n", cstats.coverage);
     	TxPrintf("Coverage in %s = %1.1f%%\n", doBox ? "box" :
 		"cell", 100.0 * fcover);
     }

@@ -34,8 +34,9 @@ static char rcsid[] __attribute__ ((unused)) = "$Header$";
 #include "tiles/tile.h"
 #include "database/database.h"	/* for TileType definition */
 #include "extflat/extflat.h"
+#include "extflat/extparse.h"
 #include "extflat/EFint.h"
-#include "extract/extract.h"	/* for device class list */
+#include "extract/extract.h"
 #include "extract/extractInt.h"	/* for extGetDevType()	*/
 
 /* C99 compat */
@@ -647,8 +648,21 @@ efBuildEquiv(def, nodeName1, nodeName2, resist, isspice)
 		    return;
 		}
 		else if (!resist)
-		    TxError("Warning:  Ports \"%s\" and \"%s\" are electrically "
+		{
+		    char *uptr1, *uptr2;
+
+		    /* Do not generate an error message if one or both node names
+		     * is made by "extract unique".
+		     */
+		    if ((uptr1 = strstr(nodeName1, "_uq")) != 0) *uptr1 = '\0';
+		    if ((uptr2 = strstr(nodeName2, "_uq")) != 0) *uptr2 = '\0';
+		    if ((uptr1 == NULL && uptr2 == NULL) ||
+				strcmp(nodeName1, nodeName2)) 
+			TxError("Warning:  Ports \"%s\" and \"%s\" are electrically "
 				"shorted.\n", nodeName1, nodeName2);
+		    if (uptr1) *uptr1 = '_';
+		    if (uptr2) *uptr2 = '_';
+		}
 		else
 		    /* Do not merge the nodes when folding in extresist parasitics */
 		    return;
@@ -691,6 +705,11 @@ efBuildEquiv(def, nodeName1, nodeName2, resist, isspice)
 		    if (dev->dev_terms[n].dterm_node == lostnode)
 			dev->dev_terms[n].dterm_node =
 				(nn1->efnn_node == NULL) ?
+				nn2->efnn_node : nn1->efnn_node;
+
+		/* Also check the substrate terminal */
+		if (dev->dev_subsnode == lostnode)
+		    dev->dev_subsnode = (nn1->efnn_node == NULL) ?
 				nn2->efnn_node : nn1->efnn_node;
 	    }
 
@@ -1607,9 +1626,125 @@ efConnectionFreeLinkedList(Connection *conn)
 /*
  * ----------------------------------------------------------------------------
  *
+ * efConnPointFreeLinkedList --
+ *
+ * Release memory for linked-list of ConnectionPoint* based on internal
+ *  list at ConnectionPoint->conn_next.  'connpt' argument must be non-NULL.
+ *
+ * Results:
+ *	Deallocates linked-list of ConnectionPoint* starting at 'connpt'
+ *
+ * Side effects:
+ *	Deallocates one or more connection point record(s).
+ *
+ * ----------------------------------------------------------------------------
+ */
+
+void
+efConnPointFreeLinkedList(ConnectionPoint *connpt)
+{
+    while (connpt)
+    {
+	ConnectionPoint *next = connpt->conn_next;
+	if (connpt->conn_name != NULL)
+	    freeMagic(connpt->conn_name);
+	freeMagic(connpt);
+	connpt = next;
+    }
+}
+
+/*
+ * ----------------------------------------------------------------------------
+ *
  * efBuildConnect --
  *
  * Process a "connect" line from a .ext file.
+ * Creates a record of the area and type of the connection.  Since the
+ * extraction at the point of finding connections no longer knows what
+ * net in the celldef (if any) is part of the connection, only the
+ * location and type is preserved, and the cell being connected has to
+ * be recovered by a search on the celldef's layout.  These records are
+ * used only by "extresist".
+ *
+ * Results:
+ *	None.
+ *
+ * Side effects:
+ *	Allocates a new connection port record for extresist, and prepends
+ *	it to the list for def.
+ *
+ * ----------------------------------------------------------------------------
+ */
+
+void
+efBuildConnect(def, llx, lly, urx, ury, layerName, upnodeName, downnodeName)
+    Def *def;
+    int llx, lly, urx, ury;
+    char *layerName;
+    char *upnodeName;
+    char *downnodeName;
+{
+    int tnew;
+    ConnectionPoint *connpt;
+    HashEntry *he;
+    Use *subuse;
+    char *hierptr, *qptr, *useid;
+
+    /* Can't do anything without a node name to connect to */
+    if (!strcmp(downnodeName, "\"None\"")) return;
+
+    /* "downnodeName" should be hierarchical;  stop at the first hierarchical
+     * divider and use the prefix to find the use being connected to.
+     * NOTE:  This will require dealing with connections that are more than
+     * one hierarchical level deep (to be done).
+     */
+    useid = downnodeName;
+    if (*useid == '"') useid++;
+    hierptr = strchr(useid, '/');
+    if (hierptr != NULL) *hierptr = '\0';
+    qptr = strrchr(useid, '"');
+    if (qptr != NULL) *qptr = '\0';
+
+    if (layerName)
+	tnew = efBuildAddStr(EFLayerNames, &EFLayerNumNames, MAXTYPES, layerName);
+    else
+	tnew = 0;
+
+    connpt = (ConnectionPoint *)mallocMagic(sizeof(ConnectionPoint));
+
+    he = HashFind(&def->def_uses, useid);
+    subuse = (Use *)HashGetValue(he);
+    connpt->conn_use = subuse;
+
+    connpt->conn_r.r_xbot = llx;
+    connpt->conn_r.r_ybot = lly;
+    connpt->conn_r.r_xtop = urx;
+    connpt->conn_r.r_ytop = ury;
+    connpt->conn_type = tnew;
+    if (!strcmp(upnodeName, "\"None\""))
+	connpt->conn_name = (char *)NULL;
+    else
+    {
+	if (*upnodeName == '"') upnodeName++;
+	connpt->conn_name = StrDup((char **)NULL, upnodeName);
+	if ((qptr = strrchr(connpt->conn_name, '"')) != NULL) *qptr = '\0';
+    }
+
+    /* To do:  Add "downnodeName" to the ConnectionPoint structure.  This
+     * may not be necessary, as it is only being used by "extresist" which
+     * is not using the extflat parser.
+     */ 
+
+    connpt->conn_next = def->def_connpts;
+    def->def_connpts = connpt;
+}
+
+/*
+ * ----------------------------------------------------------------------------
+ *
+ * efBuildMerge --
+ *
+ * Process a "merge" line from a .ext file.
  * Creates a connection record for the names 'nodeName1' and
  * 'nodeName2'.
  *
@@ -1624,7 +1759,7 @@ efConnectionFreeLinkedList(Connection *conn)
  */
 
 void
-efBuildConnect(def, nodeName1, nodeName2, deltaC, av, ac)
+efBuildMerge(def, nodeName1, nodeName2, deltaC, av, ac)
     Def *def;		/* Def to which this connection is to be added */
     char *nodeName1;	/* Name of first node in connection */
     char *nodeName2;	/* Name of other node in connection */
@@ -2102,7 +2237,7 @@ efNodeMerge(node1ptr, node2ptr)
     /* Make all EFNodeNames point to "keeping" */
     if (removing->efnode_name)
     {
-	bool topportk, topportr, bestname;
+	bool topportk, topportr, bestname, swapnames;
 
 	for (nn = removing->efnode_name; nn; nn = nn->efnn_next)
 	{
@@ -2113,10 +2248,31 @@ efNodeMerge(node1ptr, node2ptr)
 	topportk = (keeping->efnode_flags & EF_TOP_PORT) ?  TRUE : FALSE;
 	topportr = (removing->efnode_flags & EF_TOP_PORT) ?  TRUE : FALSE;
 
-	/* Concatenate list of EFNodeNames, taking into account precedence */
-	if ((!keeping->efnode_name) || (!topportk && topportr)
-		    || EFHNBest(removing->efnode_name->efnn_hier,
-		     keeping->efnode_name->efnn_hier))
+	/* The node "keeping" is being kept, but we need to decide which
+	 * node name of the two will be the node name of "keeping".  If
+	 * "keeping" has the best node name, then we're good;  otherwise,
+	 * we need to copy the name from "removing" to "keeping".
+	 *
+	 * Order of precedence:
+	 * 1) If one node does not have a name, then use the name of the other.
+	 * 2) If one node is a port and the other isn't, then use the port name.
+	 * 3) Use the one with the preferred lexigraphical order according to
+	 *    EFHNBest().
+	 */
+	if ((!keeping->efnode_name) && (removing->efnode_name))
+	    swapnames = TRUE;
+	else if ((keeping->efnode_name) && (!removing->efnode_name))
+	    swapnames = FALSE;
+	else if (!topportk && topportr)
+	    swapnames = TRUE;
+	else if (topportk && !topportr)
+	    swapnames = FALSE;
+	else
+	    swapnames = EFHNBest(removing->efnode_name->efnn_hier,
+				keeping->efnode_name->efnn_hier);
+	
+	/* Concatenate list of EFNodeNames */
+	if (swapnames)
 	{
 	    /*
 	     * New official name is that of "removing".
@@ -2203,6 +2359,14 @@ efNodeMerge(node1ptr, node2ptr)
     if (removing->efnode_flags & EF_SUBS_NODE)
 	keeping->efnode_flags |= EF_SUBS_NODE;
 
+    /*
+     * If "removing" has the EF_GLOB_SUBS_NODE flag set, then copy the
+     * port record in the flags to "keeping".
+     */
+    if (removing->efnode_flags & EF_GLOB_SUBS_NODE)
+	keeping->efnode_flags |= EF_GLOB_SUBS_NODE;
+
+    /* If EFSaveLocs is set, then merge any disjoint segments from
     /* If EFSaveLocs is set, then merge any disjoint segments from
      * removing to keeping.
      */

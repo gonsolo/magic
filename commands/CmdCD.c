@@ -117,12 +117,13 @@ bool cmdDumpParseArgs(char *cmdName, MagWindow *w, TxCommand *cmd, CellUse *dumm
 #define CALMA_READ	19
 #define CALMA_READONLY	20
 #define CALMA_RESCALE	21
-#define CALMA_WARNING	22
-#define CALMA_WRITE	23
-#define CALMA_POLYS	24
-#define CALMA_PATHS	25
-#define CALMA_UNDEFINED	26
-#define CALMA_UNIQUE	27
+#define CALMA_SAVEPATHS	22
+#define CALMA_WARNING	23
+#define CALMA_WRITE	24
+#define CALMA_POLYS	25
+#define CALMA_PATHS	26
+#define CALMA_UNDEFINED	27
+#define CALMA_UNIQUE	28
 
 #define CALMA_WARN_HELP CIF_WARN_END	/* undefined by CIF module */
 
@@ -175,6 +176,7 @@ CmdCalma(
 	"		into edit cell",
 	"readonly [yes|no]	set cell as read-only and generate output from GDS file",
 	"rescale [yes|no]	allow or disallow internal grid subdivision",
+	"savepaths [yes|no]	save path centerlines as cell properties",
 	"warning [option]	set warning information level",
 	"write file		output Calma GDS-II format to \"file\"\n"
 	"		for the window's root cell",
@@ -736,6 +738,27 @@ CmdCalma(
 	    }
 	    else
 		CalmaSubcellPolygons = (unsigned char)option;
+	    return;
+
+	case CALMA_SAVEPATHS:
+	    if (cmd->tx_argc == 2)
+	    {
+#ifdef MAGIC_WRAPPER
+		Tcl_SetObjResult(magicinterp, Tcl_NewBooleanObj(CalmaRecordPaths));
+#else
+		TxPrintf("Paths in GDS cells read from input file are%s recorded"
+				" as cell properties.\n",
+			(CalmaRecordPaths) ?  " " : " not");
+#endif
+		return;
+	    }
+	    else if (cmd->tx_argc != 3)
+		goto wrongNumArgs;
+
+	    option = Lookup(cmd->tx_argv[2], cmdCalmaYesNo);
+	    if (option < 0)
+		goto wrongNumArgs;
+	    CalmaRecordPaths = (option < 4) ? FALSE : TRUE;
 	    return;
 
 	case CALMA_NO_DUP:
@@ -1300,7 +1323,7 @@ CmdCellname(
 	    if (cellDef == (CellDef *) NULL)
 		TxError("Unknown cell %s\n", cellname);
 	    else
-		CmdDoProperty(cellDef, cmd, 3 + ((dolist) ? 1 : 0));
+		CmdDoProperty(cellDef, w, cmd, 3 + ((dolist) ? 1 : 0));
 	    break;
 
 	case IDX_DELETE:
@@ -4991,15 +5014,20 @@ cmdDumpParseArgs(
     bbox = def->cd_bbox;
     if (def->cd_flags & CDFIXEDBBOX)
     {
-	char *propvalue;
+	PropertyRecord *proprec;
 	bool found;
 
-	propvalue = (char *)DBPropGet(def, "FIXED_BBOX", &found);
+	proprec = DBPropGet(def, "FIXED_BBOX", &found);
 	if (found)
 	{
-	    if (sscanf(propvalue, "%d %d %d %d", &bbox.r_xbot, &bbox.r_ybot,
-		    &bbox.r_xtop, &bbox.r_ytop) != 4)
-		bbox = def->cd_bbox;
+	    if ((proprec->prop_type == PROPERTY_TYPE_DIMENSION) &&
+			(proprec->prop_len == 4))
+	    {
+		bbox.r_xbot = proprec->prop_value.prop_integer[0];
+		bbox.r_ybot = proprec->prop_value.prop_integer[1];
+		bbox.r_xtop = proprec->prop_value.prop_integer[2];
+		bbox.r_ytop = proprec->prop_value.prop_integer[3];
+	    }
 	}
     }
 

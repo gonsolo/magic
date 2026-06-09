@@ -39,7 +39,6 @@ static char rcsid[] __attribute__ ((unused)) ="$Header: /usr/cvsroot/magic-8.0/t
 #endif
 
 #include "tcltk/tclmagic.h"
-#include "utils/magsgtty.h"
 #include "utils/magic.h"
 #include "textio/textio.h"
 #include "utils/geometry.h"
@@ -1750,6 +1749,47 @@ done:
     while (!DQIsEmpty(&inputCommands))
 	TxFreeCommand((TxCommand *) DQPopFront(&inputCommands));
     DQFree(&inputCommands);
+}
+
+int
+TxDispatchString(
+    const char *str,
+    bool quiet)
+{
+    int result = 0;
+    DQueue inputCommands;
+
+    DQInit(&inputCommands, 4);
+    TxParseString_internal(str, &inputCommands, (TxInputEvent *) NULL);
+
+    while (!DQIsEmpty(&inputCommands))
+    {
+	TxCommand *cmd;
+
+	cmd = (TxCommand *) DQPopFront(&inputCommands);
+
+	if (txHaveCurrentPoint)
+	{
+	    cmd->tx_p = txCurrentPoint;
+	    cmd->tx_wid = txCurrentWindowID;
+	    txHaveCurrentPoint = FALSE;
+	}
+
+	result = WindSendCommand((MagWindow *) NULL, cmd, quiet);
+	TxFreeCommand(cmd);
+	TxCommandNumber++;
+
+	if (result != 0)
+	    break;
+    }
+
+    WindUpdate();
+
+    while (!DQIsEmpty(&inputCommands))
+	TxFreeCommand((TxCommand *) DQPopFront(&inputCommands));
+    DQFree(&inputCommands);
+
+    return result;
 }
 
 #endif	/* !MAGIC_WRAPPER */

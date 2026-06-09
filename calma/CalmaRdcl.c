@@ -53,6 +53,7 @@ int calmaNonManhattan;
 int CalmaFlattenLimit = 10;
 int NameConvertErrors = 0;
 bool CalmaRewound = FALSE;
+bool CalmaRecordPaths = FALSE;
 TileTypeBitMask *CalmaMaskHints = NULL;
 
 extern HashTable calmaDefInitHash;
@@ -505,28 +506,33 @@ calmaParseStructure(
 
     if (CalmaReadOnly || predefined)
     {
+	PropertyRecord *proprec;
 	char cstring[1024];
-
-	/* Writing the file position into a string is slow, but */
-	/* it prevents requiring special handling when printing	*/
-	/* out the properties.					*/
-
-	char *fpcopy = (char *)mallocMagic(20);
-	char *fncopy;
 
 	/* Substitute variable for PDK path or ~ for home directory	*/
 	/* the same way that cell references are handled in .mag files.	*/
 	DBPathSubstitute(filename, cstring, cifReadCellDef);
-	fncopy = StrDup(NULL, cstring);
-	sprintf(fpcopy, "%"DLONG_PREFIX"d", (dlong) filepos);
-	DBPropPut(cifReadCellDef, "GDS_START", (ClientData)fpcopy);
 
-	fpcopy = (char *)mallocMagic(20);
+	proprec = (PropertyRecord *)mallocMagic(sizeof(PropertyRecord));
+	proprec->prop_type = PROPERTY_TYPE_DOUBLE;
+	proprec->prop_len = 1;
+	proprec->prop_value.prop_double[0] = filepos;
+	DBPropPut(cifReadCellDef, "GDS_START", (ClientData)proprec);
+
 	filepos = FTELL(calmaInputFile);
-	sprintf(fpcopy, "%"DLONG_PREFIX"d", (dlong) filepos);
-	DBPropPut(cifReadCellDef, "GDS_END", (ClientData)fpcopy);
 
-	DBPropPut(cifReadCellDef, "GDS_FILE", (ClientData)fncopy);
+	proprec = (PropertyRecord *)mallocMagic(sizeof(PropertyRecord));
+	proprec->prop_type = PROPERTY_TYPE_DOUBLE;
+	proprec->prop_len = 1;
+	proprec->prop_value.prop_double[0] = filepos;
+	DBPropPut(cifReadCellDef, "GDS_END", (ClientData)proprec);
+
+	proprec = (PropertyRecord *)mallocMagic(sizeof(PropertyRecord) - 7 +
+		strlen(cstring));
+	proprec->prop_type = PROPERTY_TYPE_STRING;
+	proprec->prop_len = 1;
+	strcpy(proprec->prop_value.prop_string, cstring);
+	DBPropPut(cifReadCellDef, "GDS_FILE", (ClientData)proprec);
 
     	if (predefined)
     	{
@@ -783,8 +789,8 @@ calmaElementSref(
     char *filename)
 {
     int nbytes, rtype, cols, rows, nref, n, i, savescale;
-    int xlo, ylo, xhi, yhi, xsep, ysep;
-    bool madeinst = FALSE;
+    int xlo, ylo, xhi, yhi, xsep, ysep, angle;
+    bool madeinst = FALSE, rotated = FALSE;
     char *sname = NULL;
     bool isArray = FALSE;
     bool dolookahead = FALSE;
@@ -984,17 +990,73 @@ calmaElementSref(
 	refarray[2].p_x = refarray[2].p_y = 0;
     }
 
+    /* If the array is given an angle, then the meaning of rows and
+     * columns needs to be swapped for the purpose of ignoring
+     * X or Y values in the case of a 1-row or 1-column entry.
+     */
+    angle = GeoTransAngle(&trans, 0);
+    if ((angle == 90) || (angle == 270) || (angle == -90) || (angle == -270))
+	rotated = TRUE;
+
     /* If this is a cell reference, then we scale to magic coordinates
      * and place the cell in the magic database.  However, if this is
      * a cell to be flattened a la "gds flatten", then we keep the GDS
      * coordinates, and don't scale to the magic database.
+     *
+     * NOTE:  Scaling everything in the middle or reading array data
+     * and then retroactively adjusting the array data read earlier
+     * is problematic, and probably incorrect.
      */
+
+  
+    for (n = 0; n < nref; n++)
+    {
+	savescale = calmaReadScale1;
+
+	/* If there is only one column, then X data in the 2nd or 3rd
+	 * entry is irrelevant.  If there is only one row, then Y data
+	 * in the 2nd or 3rd entry is irrelevant.  Prevent issues caused
+	 * by incorrect/uninitialized data in these positions by ignoring
+	 * them as needed.
+	 */
+
+	if ((n > 0) && ((!rotated && (rows == 1)) || (rotated && (cols == 1))))
+	{
+	    calmaReadX(&refarray[n], 1);
+	    calmaSkipBytes(4);
+	    refarray[n].p_y = refarray[0].p_y;
+	}
+	else if ((n > 0) && ((!rotated && (cols == 1)) || (rotated && (rows == 1))))
+	{
+	    calmaSkipBytes(4);
+	    calmaReadY(&refarray[n], 1);
+	    refarray[n].p_x = refarray[0].p_x;
+	}
+	else
+	    calmaReadPoint(&refarray[n], 1);
+
+	if (savescale != calmaReadScale1)
+	{
+	    /* Scale changed, so update previous points read */
+	    int newscale = calmaReadScale1 / savescale;
+	    for (i = 0; i < n; i++)
+	    {
+		refarray[i].p_x *= newscale;
+		refarray[i].p_y *= newscale;
+	    }
+	}
+
+	if (FEOF(calmaInputFile))
+	    return -1;
+    }
+
+    for (n = 0; n < nref; n++)
+	refunscaled[n] = refarray[n];	// Save for CDFLATGDS cells
 
     for (n = 0; n < nref; n++)
     {
 	savescale = cifCurReadStyle->crs_scaleFactor;
-	calmaReadPoint(&refarray[n], 1);
-	refunscaled[n] = refarray[n];	// Save for CDFLATGDS cells
+
 	refarray[n].p_x = CIFScaleCoord(refarray[n].p_x, COORD_EXACT);
 	if (savescale != cifCurReadStyle->crs_scaleFactor)
 	{
@@ -1015,9 +1077,6 @@ calmaElementSref(
 	    }
 	    refarray[n].p_x *= (savescale / cifCurReadStyle->crs_scaleFactor);
 	}
-
-	if (FEOF(calmaInputFile))
-	    return -1;
     }
 
     /* Skip remainder */

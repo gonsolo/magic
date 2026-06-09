@@ -138,7 +138,11 @@ proc magic::pushstack {{name ""}} {
    if {[catch {lindex $editstack end}]} {
       set editstack {}
    }
+   # Protect against changing units by always using internal units
+   set curunits [units]
+   units internal
    lappend editstack [view get]
+   units {*}$curunits
    lappend editstack [cellname list window]
    set ltag [tag load]
    tag load {}
@@ -158,10 +162,11 @@ proc magic::popstack {} {
       tag load {}
       suspendall
       load [lindex $editstack end]
-      set snaptype [snap]
-      snap internal
+      # Protect against changing units by always using internal units
+      set curunits [units]
+      units internal
       view [lindex $editstack end-1]
-      snap $snaptype
+      units {*}$curunits
       catch {magic::cellmanager}
       catch {magic::captions}
       resumeall
@@ -186,8 +191,8 @@ proc magic::clearstack {} {
 
 proc magic::pushbox {{values {}}} {
    global boxstack
-   set snaptype [snap list]
-   snap internal
+   set curunits [units]
+   units internal
    if {[catch {set boxstack}]} {
       set boxstack {}
    }
@@ -196,7 +201,7 @@ proc magic::pushbox {{values {}}} {
    } else {
       lappend boxstack $values
    }
-   snap $snaptype
+   units {*}$curunits
    return
 }
 
@@ -210,8 +215,8 @@ proc magic::pushbox {{values {}}} {
 
 proc magic::popbox {{type values}} {
    global boxstack
-   set snaptype [snap list]
-   snap internal
+   set curunits [units]
+   units internal
    if {[catch {set boxstack}]} {
       error "No stack"
    } elseif {$boxstack == {}} {
@@ -231,7 +236,7 @@ proc magic::popbox {{type values}} {
       }
    }
    set boxstack [lrange $boxstack 0 end-1]
-   snap $snaptype
+   units {*}$curunits
    return $b
 }
 
@@ -355,8 +360,8 @@ proc magic::ruler {{text {}} {orient auto}} {
    set mmx [expr {($llx + $urx) / 2}]
    set mmy [expr {($lly + $ury) / 2}]
 
-   set snapsave [snap]
-   snap internal
+   set curunits [units]
+   units internal
 
    if {$orient == "horizontal"} {
       element add line l1_$Opts(rulers) black $llx $lly $llx $ury
@@ -410,7 +415,7 @@ proc magic::ruler {{text {}} {orient auto}} {
 	  element configure l3_$Opts(rulers) flags arrowbottom
       }
    }
-   snap $snapsave
+   units {*}$curunits
 }
 
 #---------------------------------------------------------------------
@@ -529,11 +534,15 @@ proc magic::enable_tools {} {
    # The user can change these bindings at will by using the
    # "macro" command when the tool is active.
 
+   # NOTE:  Do not name a tool "netlist" because it will get
+   # confused with the "netlist" window.
+
    magic::macro copy wiring
-   magic::macro copy netlist
+   magic::macro copy nettool
    magic::macro copy pick
 
    magic::tool wiring
+   macro  Control_Button1  "magic::trackwire %W current"
    macro  Button1          "magic::trackwire %W pick"
    macro  Button2          "magic::trackwire %W done"
    macro  Button3          "magic::trackwire %W cancel"
@@ -543,7 +552,7 @@ proc magic::enable_tools {} {
    macro  Button4 "wire incr width ; wire show"
    macro  Button5 "wire decr width ; wire show"
 
-   magic::tool netlist
+   magic::tool nettool
    macro  Button1          "netlist select"
    macro  Button2          "netlist join"
    macro  Button3          "netlist terminal"
@@ -583,6 +592,19 @@ proc magic::trackwire {window {option {}}} {
       } elseif {$option == "pick"} {
 	 puts stdout $window
 	 wire type
+	 set Opts(motion) [bind ${window} <Motion>]
+	 bind ${window} <Motion> [subst {$Opts(motion); *bypass wire show}]
+	 if {$Opts(motion) == {}} {set Opts(motion) "null"}
+	 cursor 21
+      } elseif {$option == "current"} {
+	 puts stdout $window
+	 set curunits [units]
+	 units internal
+	 wire type {*}[wire values]
+	 set wiresize [lindex [wire values] 1]
+	 box size $wiresize $wiresize
+	 box move bl cursor
+	 units {*}$curunits
 	 set Opts(motion) [bind ${window} <Motion>]
 	 bind ${window} <Motion> [subst {$Opts(motion); *bypass wire show}]
 	 if {$Opts(motion) == {}} {set Opts(motion) "null"}
@@ -629,9 +651,9 @@ proc magic::startselect {window {option {}}} {
 	    select nocycle
 	 }
       }
-      set Opts(origin) [cursor]
+      set Opts(origin) [cursor internal]
       set Opts(motion) [bind ${window} <Motion>]
-      bind ${window} <Motion> [subst {$Opts(motion); set p \[cursor\]; \
+      bind ${window} <Motion> [subst {$Opts(motion); set p \[cursor internal\]; \
 	set x \[expr {\[lindex \$p 0\] - [lindex $Opts(origin) 0]}\]i; \
 	set y \[expr {\[lindex \$p 1\] - [lindex $Opts(origin) 1]}\]i; \
 	*bypass select move \${x} \${y}}]
@@ -685,8 +707,8 @@ proc magic::tool {{type next}} {
    if {$type == "next"} {
       switch $Opts(tool) {
 	 box { set type wiring }
-	 wiring { set type netlist }
-	 netlist { set type pick }
+	 wiring { set type nettool }
+	 nettool { set type pick }
 	 pick { set type box }
       }
    }
@@ -742,9 +764,9 @@ proc magic::tool {{type next}} {
 	 set Opts(tool) wiring
 	 cursor 19 	;# sets the cursor
       }
-      netlist {
+      nettool {
 	 puts stdout {Switching to NETLIST tool.}
-	 set Opts(tool) netlist
+	 set Opts(tool) nettool
 	 cursor 18	;# sets the cursor
       }
       pick {

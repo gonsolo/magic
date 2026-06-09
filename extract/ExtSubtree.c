@@ -54,12 +54,14 @@ static char rcsid[] __attribute__ ((unused)) = "$Header: /usr/cvsroot/magic-8.0/
 /* C99 compat */
 #include "drc/drc.h"
 
-#ifdef	exactinteractions
 /*
- * If "exactinteractions" is defined, we use an experimental algorithm
- * for finding exact interaction areas.  Currently it doesn't work too
- * well, so we leave it turned off.
+ * If "exactinteractions" is defined, use an experimental algorithm
+ * for finding exact interaction areas.  Currently it doesn't work
+ * too well, so it is disabled.
  */
+/* #define exactinteractions */
+
+#ifdef	exactinteractions
 int ExtInterBloat = 10;
 #endif	/* exactinteractions */
 
@@ -174,8 +176,10 @@ extSubtree(parentUse, reg, f)
     int cuts, totcuts;
     float pdone, plast;
     SearchContext scx;
+    int savedDisplayStatus;
 
     /* Use the display timer to force a 5-second progress check */
+    savedDisplayStatus = GrDisplayStatus;
     GrDisplayStatus = DISPLAY_IN_PROGRESS;
     SigSetTimer(5);		    /* Print at 5-second intervals */
 
@@ -251,6 +255,17 @@ extSubtree(parentUse, reg, f)
 			if (result == 0) {
 			    /* If result == FALSE then ha.ha_interArea is invalid. */
 			    ha.ha_interArea = rlab;
+			    /* Ensure that the interaction area is not zero */
+			    if (ha.ha_interArea.r_xtop - ha.ha_interArea.r_xbot == 0)
+			    {
+				ha.ha_interArea.r_xtop++;
+				ha.ha_interArea.r_xbot--;
+			    }
+			    if (ha.ha_interArea.r_ytop - ha.ha_interArea.r_ybot == 0)
+			    {
+				ha.ha_interArea.r_ytop++;
+				ha.ha_interArea.r_ybot--;
+			    }
 			    result = 1;
 			}
 			else
@@ -337,7 +352,7 @@ done:
     /* Output connections and node adjustments */
     extOutputConns(&ha.ha_connHash, f);
     HashKill(&ha.ha_connHash);
-    GrDisplayStatus = DISPLAY_IDLE;
+    GrDisplayStatus = savedDisplayStatus;
     SigRemoveTimer();
 
     /* Clear the CU_SUB_EXTRACTED flag from all children instances */
@@ -779,6 +794,7 @@ extSubtreeFunc(scx, ha)
      */
     ha->ha_subArea = use->cu_bbox;
     GEOCLIP(&ha->ha_subArea, &ha->ha_interArea);
+
     hy.hy_area = &ha->ha_subArea;
     hy.hy_target = oneFlat->et_use;
     hy.hy_prefix = TRUE;

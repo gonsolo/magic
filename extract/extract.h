@@ -68,13 +68,15 @@ extern const char * const extDevTable[];
 #define	EXT_DOADJUST		0x001	/* Extract hierarchical adjustments */
 #define	EXT_DOCAPACITANCE	0x002	/* Extract capacitance */
 #define	EXT_DOCOUPLING		0x004	/* Extract coupling capacitance */
-#define	EXT_DORESISTANCE	0x008	/* Extract resistance */
+#define	EXT_DORESISTANCE	0x008	/* Extract lumped resistance */
 #define	EXT_DOLENGTH		0x010	/* Extract pathlengths */
 #define	EXT_DOFRINGEHALO	0x020	/* Distributed fringe capacitance */
-#define	EXT_DOALL		0x03f	/* ALL OF THE ABOVE */
+#define EXT_DOUNIQUE		0x100	/* Force unique nodes during extraction */
+#define	EXT_DOALL		0x13f	/* ALL OF THE ABOVE */
 #define	EXT_DOLABELCHECK	0x040	/* Check for connections by label */
 #define EXT_DOALIASES		0x080	/* Output all node aliases */
-#define EXT_DOUNIQUE		0x100	/* Force unique nodes during extraction */
+#define EXT_DOEXTRESIST		0x200	/* Do full R-C extraction */
+#define EXT_DOUNIQNOTOPPORTS	0x400	/* Ignore top cell ports w/EXT_DOUNIQUE */
 
 extern int ExtOptions;		/* Bitmask of above */
 extern char *ExtLocalPath;	/* If non-NULL, location to write .ext files */ 
@@ -85,6 +87,7 @@ extern char *ExtLocalPath;	/* If non-NULL, location to write .ext files */
 #define EXT_UNIQ_NOPORTS	2
 #define EXT_UNIQ_NOTOPPORTS	3
 #define EXT_UNIQ_TEMP		4	/* Used only with "EXT_DOUNIQUE" */
+#define EXT_UNIQ_TEMP_NOPORTS	5	/* Used only with "EXT_DOUNIQUE" */
 
 extern bool ExtTechLine();
 extern void ExtTechInit();
@@ -112,6 +115,8 @@ extern void ExtDumpCaps();
 
 extern int extEnumTilePerim(Tile *tpIn, TileType dinfo, const TileTypeBitMask *maskp, int pNum, int (*func)(), ClientData cdata);
 extern Plane *extPrepSubstrate();
+extern FILE *ExtFileOpen(CellDef *def, char *file, char *mode, char **prealfile);
+
 
 /* C99 compat */
 extern void ExtAll();

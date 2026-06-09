@@ -25,6 +25,7 @@ static const char rcsid[] __attribute__ ((unused)) = "$Header: /usr/cvsroot/magi
 #include <stdlib.h>             /* for abs() */
 #include <math.h>		/* for ceil() and sqrt() */
 #include <ctype.h>
+#include <string.h>		/* for strcmp() */
 
 #include "utils/magic.h"
 #include "utils/geometry.h"
@@ -1500,6 +1501,7 @@ cifBloatAllFunc(
 
     while (!StackEmpty(BloatStack))
     {
+	Rect cifarea;
 	TileType tt;
 
 	POPTILE(t, dinfo, BloatStack);
@@ -1516,8 +1518,6 @@ cifBloatAllFunc(
 
 	if (op->co_distance > 0)
 	{
-	    Rect cifarea;
-
 	    cifarea.r_xbot = area.r_xbot;
 	    cifarea.r_ybot = area.r_ybot;
 	    cifarea.r_xtop = area.r_xtop;
@@ -1555,40 +1555,42 @@ cifBloatAllFunc(
 	{
 	    tt = TiGetTypeExact(t);
 	    if (op->co_distance > 0)
-		GeoClip(&area, &clipArea);
-	    DBNMPaintPlane(cifPlane, TiGetTypeExact(t), &area,
+		DBNMPaintPlane(cifPlane, TiGetTypeExact(t), &cifarea,
+			CIFPaintTable, (PaintUndoInfo *) NULL);
+	    else
+		DBNMPaintPlane(cifPlane, TiGetTypeExact(t), &area,
 			CIFPaintTable, (PaintUndoInfo *) NULL);
 	}
 
 	/* Top */
-	for (tp = RT(t); RIGHT(tp) > LEFT(t); tp = BL(tp))
-	    if (TTMaskHasType(connect, TiGetBottomType(tp)))
-		PUSHTILE(tp,
-			(SplitDirection(tp) == ((tt & TT_DIRECTION) ? 1 : 0)) ?
-			(TileType)0 : (TileType)TT_SIDE,
-			BloatStack);
+	if ((op->co_distance == 0) || (area.r_ytop < clipArea.r_ytop))
+	    for (tp = RT(t); RIGHT(tp) > LEFT(t); tp = BL(tp))
+		if (TTMaskHasType(connect, TiGetBottomType(tp)))
+		    PUSHTILE(tp, (SplitDirection(tp) == ((tt & TT_DIRECTION) ? 1 : 0)) ?
+				(TileType)0 : (TileType)TT_SIDE, BloatStack);
 
 	/* Left */
-	for (tp = BL(t); BOTTOM(tp) < TOP(t); tp = RT(tp))
-	    if (TTMaskHasType(connect, TiGetRightType(tp)))
-		PUSHTILE(tp, (TileType)TT_SIDE, BloatStack);
+	if ((op->co_distance == 0) || (area.r_xbot > clipArea.r_xbot))
+	    for (tp = BL(t); BOTTOM(tp) < TOP(t); tp = RT(tp))
+		if (TTMaskHasType(connect, TiGetRightType(tp)))
+		    PUSHTILE(tp, (TileType)TT_SIDE, BloatStack);
 
 	/* Bottom */
-	for (tp = LB(t); LEFT(tp) < RIGHT(t); tp = TR(tp))
-	    if (TTMaskHasType(connect, TiGetTopType(tp)))
-		PUSHTILE(tp,
-			(SplitDirection(tp) == ((tt & TT_DIRECTION) ? 1 : 0)) ?
-			(TileType)TT_SIDE : (TileType)0,
-			BloatStack);
+	if ((op->co_distance == 0) || (area.r_ybot > clipArea.r_ybot))
+	    for (tp = LB(t); LEFT(tp) < RIGHT(t); tp = TR(tp))
+		if (TTMaskHasType(connect, TiGetTopType(tp)))
+		    PUSHTILE(tp, (SplitDirection(tp) == ((tt & TT_DIRECTION) ? 1 : 0)) ?
+				(TileType)TT_SIDE : (TileType)0, BloatStack);
 
 	/* Right */
-	for (tp = TR(t); TOP(tp) > BOTTOM(t); tp = LB(tp))
-	    if (TTMaskHasType(connect, TiGetLeftType(tp)))
-		PUSHTILE(tp, (TileType)0, BloatStack);
+	if ((op->co_distance == 0) || (area.r_xtop < clipArea.r_xtop))
+	    for (tp = TR(t); TOP(tp) > BOTTOM(t); tp = LB(tp))
+		if (TTMaskHasType(connect, TiGetLeftType(tp)))
+		    PUSHTILE(tp, (TileType)0, BloatStack);
     }
 
     /* Clear self */
-    TiSetClient(tile, CIF_UNPROCESSED);
+    // TiSetClient(tile, CIF_UNPROCESSED);
 
     /* NOTE:  Tiles must be cleared after the bloat-all function has
      * completed.  However, for bloat-all with a limiting distance,
@@ -4115,7 +4117,7 @@ cifSrTiles(
  *	one or more times for the planes being used in processing
  *	where the CIF search should be conducted over "area" scaled
  *	to CIF units, rather than the entire plane.  Currently used 
- *	only for operator CIFOP_INTERACT.
+ *	only for operators CIFOP_INTERACT and CIFOP_TAGGED.
  *
  * Results:
  *	Returns the value returned by the function.
@@ -4169,12 +4171,21 @@ cifSrTiles2(
     }
 
     cifScale = 1;
-    for (t = 0; t < TT_MAXTYPES; t++, temps++)
-	if (TTMaskHasType(&cifOp->co_cifMask, t))
-	    if (DBSrPaintArea((Tile *)NULL, *temps, area,
+    if (TTMaskIsZero(&cifOp->co_cifMask) && TTMaskIsZero(&cifOp->co_paintMask))
+    {
+	/* Current CIF plane is in *temps */
+	if (DBSrPaintArea((Tile *)NULL, *temps, area,
 			&CIFSolidBits, func, (ClientData)cdArg))
-		return 1;
-
+	    return 1;
+    }
+    else
+    {
+	for (t = 0; t < TT_MAXTYPES; t++, temps++)
+	    if (TTMaskHasType(&cifOp->co_cifMask, t))
+		if (DBSrPaintArea((Tile *)NULL, *temps, area,
+			&CIFSolidBits, func, (ClientData)cdArg))
+		    return 1;
+    }
     return 0;
 }
 
@@ -4458,14 +4469,16 @@ bridgeErase(
 	maskBits = DBPlaneTypes[i];
 	TTMaskAndMask(&maskBits, &brlims->co_paintMask);
 	if (!TTMaskEqual(&maskBits, &DBZeroTypeBits))
-	    if (DBSrPaintArea((Tile *) NULL, brlims->def->cd_planes[i], area, &brlims->co_paintMask, cifPaintFunc, CIFEraseTable))
+	    if (DBSrPaintArea((Tile *) NULL, brlims->def->cd_planes[i],
+			area, &brlims->co_paintMask, cifPaintFunc, CIFEraseTable))
 		return 0;
     }
 
     for (t = 0; t < TT_MAXTYPES; t++, temps++)
     {
         if (TTMaskHasType(&brlims->co_cifMask, t))
-           if (DBSrPaintArea((Tile *) NULL, *temps, area, &CIFSolidBits, cifPaintFunc, CIFEraseTable))
+           if (DBSrPaintArea((Tile *) NULL, *temps, area, &CIFSolidBits,
+			cifPaintFunc, CIFEraseTable))
                 return 0;
     }
 
@@ -4769,6 +4782,106 @@ cifBridgeLimFunc2(
 /*
  * ----------------------------------------------------------------------------
  *
+ * cifNotSquareFunc --
+ *
+ *	Process each tile and remove those which are square and not
+ *	connected to any other tile of the same type.  This operator aids
+ *	in the detection of bar contacts to distinguish them from regular
+ *	(square) contact cuts.  Because of the special nature of the
+ *	operator, only the negative-sense operator "not-square" is
+ *	implemented, as the positive-sense operator is not especially
+ *	useful (and can be implemented if needed with "not-square" and
+ *	"and-not"). 
+ *
+ * Results:
+ *	None.
+ *
+ * Side effects:
+ *	Modifies the CIF planes.
+ *
+ * ----------------------------------------------------------------------------
+ */
+
+int
+cifNotSquareFunc(
+    Tile *tile,
+    TileType dinfo,
+    ClientData clientData)		/* (unused) */
+{
+    Tile *tp;
+    TileType ttype;
+    Rect area;
+    int width, height;
+    bool isolated = TRUE;
+
+    if (IsSplit(tile)) return 0;	/* Non-Manhattan tiles are never square */
+    ttype = TiGetType(tile);
+    if (ttype == TT_SPACE) return 0;	/* Don't handle space tiles */
+
+    /* Search all four sides of the tile.  Tiles are only considered square
+     * for the purposes of this operator if they are also unconnected to any
+     * other tile.
+     */
+
+    /* Top */
+    for (tp = RT(tile); RIGHT(tp) > LEFT(tile); tp = BL(tp))
+	if (TiGetBottomType(tp) == ttype)
+	{
+	    isolated = FALSE;
+	    break;
+	}
+
+    /* Left */
+    if (isolated)
+	for (tp = BL(tile); BOTTOM(tp) < TOP(tile); tp = RT(tp))
+	    if (TiGetBottomType(tp) == ttype)
+	    {
+		isolated = FALSE;
+		break;
+	    }
+
+    /* Bottom */
+    if (isolated)
+	for (tp = LB(tile); LEFT(tp) < RIGHT(tile); tp = TR(tp))
+	    if (TiGetBottomType(tp) == ttype)
+	    {
+		isolated = FALSE;
+		break;
+	    }
+
+    /* Right */
+    if (isolated)
+	for (tp = TR(tile); TOP(tp) > BOTTOM(tile); tp = LB(tp))
+	    if (TiGetBottomType(tp) == ttype)
+	    {
+		isolated = FALSE;
+		break;
+	    }
+
+    TiToRect(tile, &area);
+
+    if (isolated)
+    {
+	width = area.r_xtop - area.r_xbot;
+	height = area.r_ytop - area.r_ybot;
+	if (width == height) return 0;		/* Square and isolated */
+    }
+
+    area.r_xbot *= cifScale;
+    area.r_ybot *= cifScale;
+    area.r_xtop *= cifScale;
+    area.r_ytop *= cifScale;
+
+    DBPaintPlane(cifPlane, &area, CIFPaintTable, (PaintUndoInfo *)NULL);
+
+    CIFTileOps += 1;
+    return 0;
+}
+
+
+/*
+ * ----------------------------------------------------------------------------
+ *
  * cifInteractingRegions --
  *
  *	Process each disjoint region and copy the entire content of each
@@ -4779,6 +4892,7 @@ cifBridgeLimFunc2(
  *	None.
  *
  * Side effects:
+ *	Modifies the CIF planes.
  *
  * ----------------------------------------------------------------------------
  */
@@ -4943,6 +5057,47 @@ cifInteractingRegions(
 /*
  * ----------------------------------------------------------------------------
  *
+ * cifCopyPropPlaneFunc --
+ *
+ * 	Copy the contents of a plane saved as a plane-type property into the
+ *	current CIF plane.  The property plane is in magic internal
+ *	coordinates, so each tile needs to be scaled and redrawn into the
+ *	current CIF plane.
+ *
+ * Results:
+ *	Zero to keep the search going
+ *
+ * Side effects:
+ *	Copies translated geometry into the target plane.
+ *
+ * ----------------------------------------------------------------------------
+ */
+
+int
+cifCopyPropPlaneFunc(Tile *tile,
+    TileType dinfo,
+    Plane *curPlane)
+{
+    Rect bbox;
+
+    TiToRect(tile, &bbox);
+
+    cifScale = (CIFCurStyle) ? CIFCurStyle->cs_scaleFactor : 1;
+
+    bbox.r_xbot *= cifScale;
+    bbox.r_ybot *= cifScale;
+    bbox.r_xtop *= cifScale;
+    bbox.r_ytop *= cifScale;
+
+    cifScale = 1;
+    DBNMPaintPlane(curPlane, CIF_SOLIDTYPE, &bbox,
+		CIFPaintTable, (PaintUndoInfo *)NULL);
+    return 0;
+}
+
+/*
+ * ----------------------------------------------------------------------------
+ *
  * CIFGenLayer --
  *
  *	This routine will generate one CIF layer.
@@ -4991,13 +5146,15 @@ CIFGenLayer(
     CIFSquaresInfo csi;
     SearchContext scx;
     TileType ttype;
-    char *netname;
+    char *netname, *text;
+    Label *label;
     BloatStruct bls;
     BridgeStruct brs;
     BridgeLimStruct brlims;
     BridgeData *bridge;
-    BloatData *bloats;
+    BloatData *bloats, locbloat;
     bool hstop = FALSE;
+    PropertyRecord *proprec;
     char *propvalue;
     bool found;
 
@@ -5306,7 +5463,6 @@ CIFGenLayer(
 
 	        if (bloats->bl_plane < 0)   /* Bloat types are CIF types */
 	        {
-		    bls.temps = temps;
 		    for (ttype = 0; ttype < TT_MAXTYPES; ttype++, bls.temps++)
 			if (bloats->bl_distance[ttype] > 0)
 			    (void) DBSrPaintArea((Tile *)NULL, *bls.temps, &TiPlaneRect,
@@ -5314,9 +5470,12 @@ CIFGenLayer(
 				    (ClientData)NULL);
 	        }
 	        else
+		{
+		    TTMaskSetMask(&bls.connect, &op->co_paintMask);
 		    DBSrPaintArea((Tile *)NULL, cellDef->cd_planes[bloats->bl_plane],
 			    &TiPlaneRect, &bls.connect, cifProcessResetFunc,
 			    (ClientData)NULL);
+		}
 
 		break;
 
@@ -5395,7 +5554,6 @@ CIFGenLayer(
 		nextPlane = temp;
 		break;
 
-
 	    case CIFOP_MAXRECT:
 		cifPlane = curPlane;
 
@@ -5413,6 +5571,19 @@ CIFGenLayer(
 		DBClearPaintPlane(nextPlane);
 		cifPlane = nextPlane;
 		cifInteractingRegions(op, area, cellDef, temps, curPlane);
+		temp = curPlane;
+		curPlane = nextPlane;
+		nextPlane = temp;
+		break;
+
+	    case CIFOP_NOTSQUARE:
+		DBClearPaintPlane(nextPlane);
+		cifPlane = nextPlane;
+		cifScale = 1;
+		DBSrPaintArea((Tile *) NULL, curPlane, &TiPlaneRect,
+		    	&CIFSolidBits, cifNotSquareFunc,
+			(ClientData)NULL);
+
 		temp = curPlane;
 		curPlane = nextPlane;
 		nextPlane = temp;
@@ -5443,6 +5614,149 @@ CIFGenLayer(
 		}
 		break;
 
+	    case CIFOP_TAGGED:
+		if (hier)
+		{
+		    hstop = TRUE;	/* Stop hierarchical processing */
+		    break;
+		}
+
+		/*
+		 * Find all relevant labels by text matching and then continue
+		 * like CIFOP_BLOATALL.  CIFOP_BLOATALL uses a BloatData record
+		 * which is not part of CIFOP_TAGGED.  Create a BloatData record
+		 * on the fly for each tagged area based on type, and swap it for
+		 * the text, so that cifBloatAllFunc believes this is actually a
+		 * CIFOP_BLOATALL operation.  Note that we don't actually care
+		 * what layer the label is attached to (lab_type).  We are looking
+		 * for labels whose lab_rect values overlap the types that are given
+		 * in the rule.
+		 */
+
+		cifPlane = curPlane;
+		bls.op = op;
+		bls.def = cellDef;
+		bls.temps = temps;
+
+		text = (char *)op->co_client;
+
+	        bloats = &locbloat;
+		if (!TTMaskIsZero(&op->co_cifMask))
+		{
+		    bloats->bl_plane = -1;
+		    for (ttype = 0; ttype < TT_MAXTYPES; ttype++)
+		    {
+			if (TTMaskHasType(&op->co_cifMask, ttype))
+		    	    bloats->bl_distance[ttype] = 1;
+			else
+		    	    bloats->bl_distance[ttype] = 0;
+		    }
+		}
+		else if (!TTMaskIsZero(&op->co_paintMask))
+		{
+		    int plane, pmask;
+		    pmask = DBTechTypesToPlanes(&op->co_paintMask);
+		    for (plane = PL_TECHDEPBASE; plane < DBNumPlanes; plane++)
+			if (PlaneMaskHasPlane(pmask, plane))
+			    break;
+		    bloats->bl_plane = plane;
+		    for (ttype = 0; ttype < TT_MAXTYPES; ttype++)
+		    {
+			if (TTMaskHasType(&op->co_paintMask, ttype))
+		    	    bloats->bl_distance[ttype] = 1;
+			else
+		    	    bloats->bl_distance[ttype] = 0;
+		    }
+		}
+		else
+		{
+		    /* Operate on the existing plane. */
+
+		    bloats->bl_distance[0] = 1;
+		    for (ttype = 1; ttype < TT_MAXTYPES; ttype++)
+			bloats->bl_distance[ttype] = 0;
+
+		    bloats->bl_plane = -1;
+		    bls.temps = &curPlane;
+
+		    DBClearPaintPlane(nextPlane);
+		    cifPlane = nextPlane;
+		}
+
+		/* Replace the client data with the bloat record */
+		op->co_client = (ClientData)bloats;
+
+	        if (bloats->bl_plane < 0)
+	        {
+		   /* bl_plane == -1 indicates bloating into a CIF templayer,	*/
+		   /* so the only connecting type should be CIF_SOLIDTYPE.	*/
+		   TTMaskSetOnlyType(&bls.connect, CIF_SOLIDTYPE);
+	        }
+	        else
+	        {
+		    int i;
+		    TTMaskZero(&bls.connect);
+		    for (i = 0; i < TT_MAXTYPES; i++)
+			if (bloats->bl_distance[i] != 0)
+			  TTMaskSetType(&bls.connect, i);
+	        }
+
+		for (label = cellDef->cd_labels; label; label = label->lab_next)
+		{
+		    if (!strcmp(label->lab_text, text))
+		    {
+			Rect labr = label->lab_rect;
+
+			/* Since cifSrTiles2() searches over an area, the
+			 * area must not be degenerate.
+			 */
+			if (labr.r_xbot == labr.r_xtop)
+			{
+			    labr.r_xbot--;
+			    labr.r_xtop++;
+			}
+			if (labr.r_ybot == labr.r_ytop)
+			{
+			    labr.r_ybot--;
+			    labr.r_ytop++;
+			}
+			cifSrTiles2(op, &labr, cellDef, bls.temps,
+				cifBloatAllFunc, (ClientData)&bls);
+		    }
+		}
+
+	        /* Reset marked tiles */
+
+	        if (bloats->bl_plane < 0)   /* Bloat types are CIF types */
+	        {
+		    for (ttype = 0; ttype < TT_MAXTYPES; ttype++, bls.temps++)
+			if (bloats->bl_distance[ttype] > 0)
+			    (void) DBSrPaintArea((Tile *)NULL, *bls.temps, &TiPlaneRect,
+				    &CIFSolidBits, cifProcessResetFunc,
+				    (ClientData)NULL);
+	        }
+	        else
+		{
+		    TTMaskSetMask(&bls.connect, &op->co_paintMask);
+		    DBSrPaintArea((Tile *)NULL, cellDef->cd_planes[bloats->bl_plane],
+			    &TiPlaneRect, &bls.connect, cifProcessResetFunc,
+			    (ClientData)NULL);
+		}
+
+		/* Replace the client data */
+		op->co_client = (ClientData)text;
+
+		/* If operating on the current plane, swap the current
+		 * and next planes.
+		 */
+		if (TTMaskIsZero(&op->co_cifMask) && TTMaskIsZero(&op->co_paintMask))
+		{
+		    temp = curPlane;
+		    curPlane = nextPlane;
+		    nextPlane = temp;
+		}
+		break;
+
 	    case CIFOP_BOUNDARY:
 		if (hier)
 		{
@@ -5454,10 +5768,17 @@ CIFGenLayer(
 
 		if (origDef && (origDef->cd_flags & CDFIXEDBBOX))
 		{
-		    propvalue = (char *)DBPropGet(origDef, "FIXED_BBOX", &found);
+		    proprec = DBPropGet(origDef, "FIXED_BBOX", &found);
 		    if (!found) break;
-		    if (sscanf(propvalue, "%d %d %d %d", &bbox.r_xbot, &bbox.r_ybot,
-				&bbox.r_xtop, &bbox.r_ytop) != 4) break;
+
+		    if ((proprec->prop_type == PROPERTY_TYPE_DIMENSION) &&
+				(proprec->prop_len == 4))
+		    {
+			bbox.r_xbot = proprec->prop_value.prop_integer[0];
+			bbox.r_ybot = proprec->prop_value.prop_integer[1];
+			bbox.r_xtop = proprec->prop_value.prop_integer[2];
+			bbox.r_ytop = proprec->prop_value.prop_integer[3];
+		    }
 
 		    cifScale = (CIFCurStyle) ? CIFCurStyle->cs_scaleFactor : 1;
 		    bbox.r_xbot *= cifScale;
@@ -5519,46 +5840,22 @@ CIFGenLayer(
 
 	    case CIFOP_MASKHINTS:
 		{
-		    int j, numfound;
+		    int n;
 		    char propname[512];
-		    char *propptr;
 		    char *layername = (char *)op->co_client;
+		    Tile *t;
 
-		    sprintf(propname, "MASKHINTS_%s", layername);
+		    snprintf(propname, 512, "MASKHINTS_%s", layername);
 		    
-		    propvalue = (char *)DBPropGet(cellDef, propname, &found);
+		    if (cellDef == (CellDef *)NULL) break;
+		    proprec = DBPropGet(cellDef, propname, &found);
 		    if (!found) break;	    /* No mask hints available */
-		    propptr = propvalue;
-		    while (*propptr)
-		    {
-			numfound = sscanf(propptr, "%d %d %d %d",
-				&bbox.r_xbot, &bbox.r_ybot,
-				&bbox.r_xtop, &bbox.r_ytop);
 
-			if (numfound != 4)
-			{
-			    /* To do:  Allow keyword "rect", "tri", or "poly"
-			     * at the start of the list and parse accordingly.
-			     * For now, this only flags an error.
-			     */
-			    TxError("%s:  Cannot read rectangle values.\n", propname);
-			    break;
-			}
-			cifPlane = curPlane;
-			cifScale = (CIFCurStyle) ? CIFCurStyle->cs_scaleFactor : 1;
-			bbox.r_xbot *= cifScale;
-			bbox.r_xtop *= cifScale;
-			bbox.r_ybot *= cifScale;
-			bbox.r_ytop *= cifScale;
-			cifScale = 1;
-			DBNMPaintPlane(curPlane, CIF_SOLIDTYPE, &bbox,
-				CIFPaintTable, (PaintUndoInfo *)NULL);
-			for (j = 0; j < 4; j++)
-			{
-			    while (*propptr && isspace(*propptr)) propptr++;
-			    while (*propptr && !isspace(*propptr)) propptr++;
-			}
-		    }
+		    ASSERT (proprec->prop_type == PROPERTY_TYPE_PLANE, "CIFGenLayer");
+		    t = PlaneGetHint(proprec->prop_value.prop_plane);
+		    DBSrPaintArea(t, proprec->prop_value.prop_plane,
+				&TiPlaneRect, &CIFSolidBits,
+				cifCopyPropPlaneFunc, (ClientData)curPlane);
 		}
 		break;
 

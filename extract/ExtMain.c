@@ -35,6 +35,7 @@ static char rcsid[] __attribute__ ((unused)) = "$Header: /usr/cvsroot/magic-8.0/
 #include "debug/debug.h"
 #include "extract/extract.h"
 #include "extract/extractInt.h"
+#include "resis/resis.h"
 #include "utils/signals.h"
 #include "utils/stack.h"
 #include "utils/utils.h"
@@ -42,9 +43,6 @@ static char rcsid[] __attribute__ ((unused)) = "$Header: /usr/cvsroot/magic-8.0/
 #include "dbwind/dbwind.h"
 #include "utils/main.h"
 #include "utils/undo.h"
-
-/* Imports from elsewhere in this module */
-extern FILE *extFileOpen();
 
 /* ------------------------ Exported variables ------------------------ */
 
@@ -83,21 +81,11 @@ typedef struct _linkedDef {
     struct _linkedDef *ld_next;
 } LinkedDef;
 
-/* Linked list structure to use to store the substrate plane from each	*/ 
-/* extracted CellDef so that they can be returned to the original after	*/
-/* extraction.								*/
-
-struct saveList {
-    Plane *sl_plane;
-    CellDef *sl_def;
-    struct saveList *sl_next;
-};
-
     /* Stack of defs pending extraction */
 Stack *extDefStack;
 
     /* Forward declarations */
-int extDefInitFunc();
+int extDefInitFunc(CellDef *, ClientData);	/* UNUSED */
 void extDefPush();
 void extDefIncremental();
 void extParents();
@@ -407,9 +395,11 @@ ExtAll(rootUse)
  * cell defs, in preparation for extracting a subtree
  * rooted at a particular def.
  */
+/*ARGSUSED*/
 int
-extDefInitFunc(def)
+extDefInitFunc(def, cdata)
     CellDef *def;
+    ClientData cdata;	/* UNUSED */
 {
     def->cd_client = (ClientData) 0;
     return (0);
@@ -482,6 +472,19 @@ ExtUnique(rootUse, option)
 
     /* Fix up bounding boxes if they've changed */
     DBFixMismatch();
+
+    /* Because the "extract unique" does the same thing as "extract do unique"
+     * but the options may be different, disable "extract do unique" when
+     * "extract unique" is run, on the assumption that no user would
+     * intentionally use both methods.  If "do unique" was set and got
+     * disabled, then flag a warning.
+     */
+    if (ExtOptions & EXT_DOUNIQUE)
+    {
+	ExtOptions &= ~EXT_DOUNIQUE;
+	TxPrintf("Warning:  Extract option \"do unique\" disabled because "
+		"\"extract unique\" was run.\n");
+    }
 
     /* Mark all defs as being unvisited */
     (void) DBCellSrDefs(0, extDefInitFunc, (ClientData) 0);
@@ -606,7 +609,7 @@ extParents(use, doExtract)
     extDefParentFunc(use->cu_def);
 
     /* Now extract all the cells we just found */
-    extExtractStack(extDefStack, doExtract, (CellDef *) NULL);
+    extExtractStack(extDefStack, doExtract, (CellDef *)NULL);
     StackFree(extDefStack);
 
     /* Replace any modified substrate planes in use->cu_def's children */
@@ -688,7 +691,7 @@ ExtParentArea(use, changedArea, doExtract)
     extDefParentAreaFunc(use->cu_def, use->cu_def, (CellUse *) NULL, &area);
 
     /* Now extract all the cells we just found */
-    extExtractStack(extDefStack, doExtract, (CellDef *) NULL);
+    extExtractStack(extDefStack, doExtract, (CellDef *)NULL);
     StackFree(extDefStack);
 }
 
@@ -805,6 +808,23 @@ ExtractOneCell(def, outName, doLength)
     }
 
     savePlane = ExtCell(def, outName, doLength);
+
+    /* Run full R-C extraction if specified in options */
+
+    if (ExtOptions & EXT_DOEXTRESIST)
+    {
+	ResisData *resisdata = ResInit();
+
+	UndoDisable();
+	
+	ResOptionsFlags |= ResOpt_Signal;
+	resisdata->mainDef = def;
+	resisdata->savePlanes = (struct saveList *)NULL;	/* unused */
+
+	ExtResisForDef(def, resisdata);
+
+	UndoEnable();
+    }
 
     /* Restore all modified substrate planes and modified labels */
 
@@ -945,7 +965,7 @@ extTimestampMisMatch(def)
 
     doLocal = (ExtLocalPath == NULL) ? FALSE : TRUE;
 
-    extFile = extFileOpen(def, (char *) NULL, "r", (char **) NULL);
+    extFile = ExtFileOpen(def, (char *) NULL, "r", (char **) NULL);
     if (extFile == NULL)
 	return (TRUE);
 
@@ -991,10 +1011,18 @@ extExtractStack(stack, doExtract, rootDef)
     bool first = TRUE;
     Plane *savePlane;
     CellDef *def;
+    LinkedDef *savelist = NULL, *revlist = NULL, *newld;
     struct saveList *newsl, *sl = (struct saveList *)NULL;
 
     while ((def = (CellDef *) StackPop(stack)))
     {
+	if (ExtOptions & EXT_DOEXTRESIST)
+	{
+	    newld = (LinkedDef *)mallocMagic(sizeof(LinkedDef));
+	    newld->ld_def = def;
+	    newld->ld_next = savelist;
+	    savelist = newld;
+	}
 	def->cd_client = (ClientData) 0;
 	if (!SigInterruptPending)
 	{
@@ -1025,6 +1053,44 @@ extExtractStack(stack, doExtract, rootDef)
 	    else
 		def->cd_flags &= ~CDNOEXTRACT; 
 	}
+    }
+
+    /* Now that all cells have been processed, run full R-C extraction */
+    if (ExtOptions & EXT_DOEXTRESIST)
+    {
+	ResisData *resisdata = ResInit();
+	LinkedDef *srchld, *nextld;
+
+	UndoDisable();
+
+	/* Reverse the linked list from top-down to bottom-up */
+	srchld = savelist;
+	while (srchld != NULL)
+	{
+	    nextld = srchld->ld_next;
+	    srchld->ld_next = revlist;
+	    revlist = srchld;
+	    srchld = nextld;
+	}
+
+	/* Reprocess the list and call "extresist" for each cell def */
+	srchld = revlist;
+	while (srchld != NULL)
+	{
+	    nextld = srchld->ld_next;
+	    def = srchld->ld_def;
+
+	    ResOptionsFlags |= ResOpt_Signal;
+	    resisdata->mainDef = def;
+	    resisdata->savePlanes = (struct saveList *)NULL;	/* unused */
+
+	    TxPrintf("Processing cell %s for resistance extraction.\n", def->cd_name);
+	    ExtResisForDef(def, resisdata);
+
+	    freeMagic(srchld);
+	    srchld = nextld;
+	}
+	UndoEnable();
     }
 
     /* Replace any modified substrate planes and modified labels */

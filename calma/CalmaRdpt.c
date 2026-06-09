@@ -114,6 +114,8 @@ calmaInputRescale(
 /*
  * ----------------------------------------------------------------------------
  *
+ * calmaReadX ---
+ * calmaReadY ---
  * calmaReadPoint ---
  *
  * Read a point from the input.
@@ -132,11 +134,17 @@ calmaInputRescale(
  *	encountered, then everything in the GDS planes is rescaled
  *	to match.
  *
+ * Notes:
+ *	This routine has been split into individual X and Y reads so that
+ *	array data can be read while ignoring offset information when there
+ *	is only one row or column;  otherwise, bad or uninitialized data
+ *	in the record can cause unnecessary and incorrect scaling.
+ *
  * ----------------------------------------------------------------------------
  */
 
 void
-calmaReadPoint(
+calmaReadX(
     Point *p,
     int iscale)
 {
@@ -163,6 +171,15 @@ calmaReadPoint(
 	}
     }
     p->p_x /= calmaReadScale2;
+}
+
+
+void
+calmaReadY(
+    Point *p,
+    int iscale)
+{
+    int rescale;
 
     READI4((p)->p_y);
     p->p_y *= (calmaReadScale1 * iscale);
@@ -186,6 +203,15 @@ calmaReadPoint(
 	}
     }
     p->p_y /= calmaReadScale2;
+}
+
+void
+calmaReadPoint(
+    Point *p,
+    int iscale)
+{
+    calmaReadX(p, iscale);
+    calmaReadY(p, iscale);
 }
 
 
@@ -511,7 +537,6 @@ calmaElementPath(void)
     int layer, dt, width, pathtype, ciftype, savescale;
     int xmin, ymin, xmax, ymax, temp;
     CIFPath *pathheadp, *pathp, *previousp;
-    Rect segment;
     Plane *plane;
     int first,last;
     CellUse *use;
@@ -692,7 +717,12 @@ calmaElementPath(void)
 	    }
 	}
 
-	CIFPropRecordPath(cifReadCellDef, pathheadp, TRUE, "path");
+	/* If requested by command option, record the path centerline as a
+	 * property of the cell def.
+	 */
+	if (CalmaRecordPaths)
+	    CIFPropRecordPath(cifReadCellDef, pathheadp, TRUE, "path");
+
 	CIFPaintWirePath(pathheadp, width,
 		(pathtype == CALMAPATH_SQUAREFLUSH || pathtype == CALMAPATH_CUSTOM) ?
 		FALSE : TRUE, plane, CIFPaintTable, (PaintUndoInfo *)NULL);

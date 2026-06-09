@@ -635,10 +635,21 @@ cmdSelectArea(
 	int i;
 	for (i = 0; i < DBNumUserLayers; i++)
 	{
-	    if((TTMaskHasType(&mask, i)) && !(TTMaskHasType(&crec->dbw_visibleLayers, i)))
+	    if ((TTMaskHasType(&mask, i)) &&
+			!(TTMaskHasType(&crec->dbw_visibleLayers, i)))
 		TTMaskClearType(&mask, i);
 	}
+
+	/* Remove L_CELL and L_LABEL if crec->dbw_flags indicates that
+	 * they are not visible in the layout window.
+	 */
+
+	if (!(crec->dbw_flags & DBW_SEELABELS)) TTMaskClearType(&mask, L_LABEL);
+	if (!(crec->dbw_flags & DBW_SEECELLS)) TTMaskClearType(&mask, L_CELL);
     }
+    else if (option == SEL_AREA)
+	TTMaskSetType(&mask, L_LABEL);
+
     SelectArea(&scx, &mask, crec->dbw_bitmask, globmatch);
 }
 
@@ -1027,7 +1038,7 @@ CmdSelect(
 
 	/*--------------------------------------------------------------------
 	 * Select everything under the box, perhaps looking only at
-	 * particular layers, but only if its visible.
+	 * particular layers, but only if it's visible.
 	 *--------------------------------------------------------------------
 	 */
 
@@ -1084,25 +1095,33 @@ CmdSelect(
 	 */
 
 	case SEL_BBOX:
+	{
+	    char *selllx, *sellly, *selurx, *selury;
+
 	    GeoTransRect(&SelectUse->cu_transform, &SelectDef->cd_bbox, &selarea);
+
+	    selllx = DBWPrintValue(selarea.r_xbot, w, TRUE);
+	    sellly = DBWPrintValue(selarea.r_ybot, w, FALSE);
+	    selurx = DBWPrintValue(selarea.r_xtop, w, TRUE);
+	    selury = DBWPrintValue(selarea.r_ytop, w, FALSE);
 
 #ifdef MAGIC_WRAPPER
 	    lobj = Tcl_NewListObj(0, NULL);
 	    Tcl_ListObjAppendElement(magicinterp, lobj,
-			Tcl_NewIntObj(selarea.r_xbot));
+			Tcl_NewStringObj(selllx, -1));
 	    Tcl_ListObjAppendElement(magicinterp, lobj,
-			Tcl_NewIntObj(selarea.r_ybot));
+			Tcl_NewStringObj(sellly, -1));
 	    Tcl_ListObjAppendElement(magicinterp, lobj,
-			Tcl_NewIntObj(selarea.r_xtop));
+			Tcl_NewStringObj(selurx, -1));
 	    Tcl_ListObjAppendElement(magicinterp, lobj,
-			Tcl_NewIntObj(selarea.r_ytop));
+			Tcl_NewStringObj(selury, -1));
 	    Tcl_SetObjResult(magicinterp, lobj);
 #else
-	    TxPrintf("Select bounding box: %d %d %d %d\n",
-		    selarea.r_xbot, selarea.r_ybot,
-		    selarea.r_xtop, selarea.r_ytop);
+	    TxPrintf("Select bounding box: %s %s %s %s\n",
+		    selllx, sellly, selurx, selury);
 #endif
 	    return;
+	}
 
 	/*--------------------------------------------------------------------
 	 * Make a copy of the selection at its present loction but do not
@@ -1793,13 +1812,18 @@ cmdLabelSizeFunc(
 
     if (value == NULL)
     {
+	char *labsize;
+	MagWindow *w;
+
+	windCheckOnlyWindow(&w, DBWclientID);
+	labsize = DBWPrintValue(label->lab_size / 8, w, FALSE);
+
 #ifdef MAGIC_WRAPPER
 	lobj = Tcl_GetObjResult(magicinterp);
-	Tcl_ListObjAppendElement(magicinterp, lobj,
-			Tcl_NewDoubleObj((double)label->lab_size / 8.0));
+	Tcl_ListObjAppendElement(magicinterp, lobj, Tcl_NewStringObj(labsize, -1));
 	Tcl_SetObjResult(magicinterp, lobj);
 #else
-	TxPrintf("%g\n", (double)label->lab_size / 8.0);
+	TxPrintf("%s\n", labsize);
 #endif
     }
     else if (label->lab_size != *value)
@@ -1944,18 +1968,22 @@ cmdLabelOffsetFunc(
 
     if (point == NULL)
     {
+	char *laboffx, *laboffy;
+	MagWindow *w;
+
+	windCheckOnlyWindow(&w, DBWclientID);
+	laboffx = DBWPrintValue(label->lab_offset.p_x / 8, w, TRUE);
+	laboffy = DBWPrintValue(label->lab_offset.p_x / 8, w, FALSE);
+
 #ifdef MAGIC_WRAPPER
 	lobj = Tcl_GetObjResult(magicinterp);
 	pobj = Tcl_NewListObj(0, NULL);
 	Tcl_ListObjAppendElement(magicinterp, lobj, pobj);
-	Tcl_ListObjAppendElement(magicinterp, pobj,
-			Tcl_NewDoubleObj((double)label->lab_offset.p_x / 8.0));
-	Tcl_ListObjAppendElement(magicinterp, pobj,
-			Tcl_NewDoubleObj((double)label->lab_offset.p_y / 8.0));
+	Tcl_ListObjAppendElement(magicinterp, pobj, Tcl_NewStringObj(laboffx, -1));
+	Tcl_ListObjAppendElement(magicinterp, pobj, Tcl_NewStringObj(laboffy, -1));
 	Tcl_SetObjResult(magicinterp, lobj);
 #else
-	TxPrintf("%g %g\n", (double)(label->lab_offset.p_x) / 8.0,
-		(double)(label->lab_offset.p_y) / 8.0);
+	TxPrintf("%s %s\n", laboffx, laboffy);
 #endif
     }
     else if (!GEO_SAMEPOINT(label->lab_offset, *point))
@@ -1985,23 +2013,25 @@ cmdLabelRectFunc(
 
     if (rect == NULL)
     {
+	char *labllx, *lablly, *laburx, *labury;
+
+	/* Note:  Ideally, the MagWindow pointer should be passed to this function */
+	labllx = DBWPrintValue(label->lab_rect.r_xbot, (MagWindow *)NULL, TRUE);
+	lablly = DBWPrintValue(label->lab_rect.r_ybot, (MagWindow *)NULL, FALSE);
+	laburx = DBWPrintValue(label->lab_rect.r_xtop, (MagWindow *)NULL, TRUE);
+	labury = DBWPrintValue(label->lab_rect.r_ytop, (MagWindow *)NULL, FALSE);
+
 #ifdef MAGIC_WRAPPER
 	lobj = Tcl_GetObjResult(magicinterp);
 	pobj = Tcl_NewListObj(0, NULL);
 	Tcl_ListObjAppendElement(magicinterp, lobj, pobj);
-	Tcl_ListObjAppendElement(magicinterp, pobj,
-			Tcl_NewIntObj((double)label->lab_rect.r_xbot));
-	Tcl_ListObjAppendElement(magicinterp, pobj,
-			Tcl_NewIntObj((double)label->lab_rect.r_ybot));
-	Tcl_ListObjAppendElement(magicinterp, pobj,
-			Tcl_NewIntObj((double)label->lab_rect.r_xtop));
-	Tcl_ListObjAppendElement(magicinterp, pobj,
-			Tcl_NewIntObj((double)label->lab_rect.r_ytop));
+	Tcl_ListObjAppendElement(magicinterp, pobj, Tcl_NewStringObj(labllx, -1));
+	Tcl_ListObjAppendElement(magicinterp, pobj, Tcl_NewStringObj(lablly, -1));
+	Tcl_ListObjAppendElement(magicinterp, pobj, Tcl_NewStringObj(laburx, -1));
+	Tcl_ListObjAppendElement(magicinterp, pobj, Tcl_NewStringObj(labury, -1));
 	Tcl_SetObjResult(magicinterp, lobj);
 #else
-	TxPrintf("%d %d %d %d\n",
-			label->lab_rect.r_xbot, label->lab_rect.r_ybot,
-			label->lab_rect.r_xtop, label->lab_rect.r_ytop);
+	TxPrintf("%s %s %s %s\n", labllx, lablly, laburx,labury);
 #endif
     }
     else if (!GEO_SAMERECT(label->lab_rect, *rect))
@@ -2202,9 +2232,13 @@ CmdSetLabel(
 	    }
 	    else if (EditCellUse)
 	    {
-		SelEnumLabelsMirror(&DBAllTypeBits, TRUE, (bool *)NULL,
-			cmdLabelTextFunc, (locargc == 3) ?
-			(ClientData)cmd->tx_argv[argstart + 1] : (ClientData)NULL);
+		if (locargc == 2)
+		    SelEnumLabels(&DBAllTypeBits, TRUE, (bool *)NULL,
+				cmdLabelTextFunc, (ClientData)NULL);
+		else
+		    SelEnumLabelsMirror(&DBAllTypeBits, TRUE, (bool *)NULL,
+				cmdLabelTextFunc,
+				(ClientData)cmd->tx_argv[argstart + 1]);
 	    }
 	    break;
 
@@ -2270,9 +2304,12 @@ CmdSetLabel(
 		}
 		else if (EditCellUse)
 		{
-		    SelEnumLabelsMirror(&DBAllTypeBits, TRUE, (bool *)NULL,
-				cmdLabelFontFunc, (locargc == 3) ?
-				(ClientData)&font : (ClientData)NULL);
+		    if (locargc == 2)
+			SelEnumLabels(&DBAllTypeBits, TRUE, (bool *)NULL,
+				cmdLabelFontFunc, (ClientData)NULL);
+		    else
+			SelEnumLabelsMirror(&DBAllTypeBits, TRUE, (bool *)NULL,
+				cmdLabelFontFunc, (ClientData)&font);
 		}
 	    }
 	    break;
@@ -2300,9 +2337,12 @@ CmdSetLabel(
 	    }
 	    else if (EditCellUse)
 	    {
-		SelEnumLabelsMirror(&DBAllTypeBits, TRUE, (bool *)NULL,
-			cmdLabelJustFunc, (locargc == 3) ?
-			(ClientData)&pos : (ClientData)NULL);
+		if (locargc == 2)
+		    SelEnumLabels(&DBAllTypeBits, TRUE, (bool *)NULL,
+				cmdLabelJustFunc, (ClientData)NULL);
+		else
+		    SelEnumLabelsMirror(&DBAllTypeBits, TRUE, (bool *)NULL,
+				cmdLabelJustFunc, (ClientData)&pos);
 	    }
 	    break;
 
@@ -2317,11 +2357,13 @@ CmdSetLabel(
 	    {
 		if (locargc == 2)
 		{
+		    char *labsize;
+
+		    labsize = DBWPrintValue(DefaultLabel->lab_size, w, FALSE);
 #ifdef MAGIC_WRAPPER
-		    Tcl_SetObjResult(magicinterp,
-				Tcl_NewIntObj(DefaultLabel->lab_size));
+		    Tcl_SetObjResult(magicinterp, Tcl_NewStringObj(labsize, -1));
 #else
-		    TxPrintf("%d\n", DefaultLabel->lab_size);
+		    TxPrintf("%s\n", labsize);
 #endif
 		}
 		else
@@ -2329,9 +2371,12 @@ CmdSetLabel(
 	    }
 	    else if (EditCellUse)
 	    {
-		SelEnumLabelsMirror(&DBAllTypeBits, TRUE, (bool *)NULL,
-			cmdLabelSizeFunc, (locargc == 3) ?
-			(ClientData)&size : (ClientData)NULL);
+		if (locargc == 2)
+		    SelEnumLabels(&DBAllTypeBits, TRUE, (bool *)NULL,
+				cmdLabelSizeFunc, (ClientData)NULL);
+		else
+		    SelEnumLabelsMirror(&DBAllTypeBits, TRUE, (bool *)NULL,
+				cmdLabelSizeFunc, (ClientData)&size);
 	    }
 	    break;
 
@@ -2360,16 +2405,20 @@ CmdSetLabel(
 	    {
 		if (locargc == 2)
 		{
+		    char *laboffx, *laboffy;
+		    laboffx = DBWPrintValue(DefaultLabel->lab_offset.p_x, w,
+					TRUE);
+		    laboffy = DBWPrintValue(DefaultLabel->lab_offset.p_y, w,
+					FALSE);
 #ifdef MAGIC_WRAPPER
 		    lobj = Tcl_NewListObj(0, NULL);
 	    	    Tcl_ListObjAppendElement(magicinterp, lobj,
-				Tcl_NewIntObj(DefaultLabel->lab_offset.p_x));
+				Tcl_NewStringObj(laboffx, -1));
 	    	    Tcl_ListObjAppendElement(magicinterp, lobj,
-				Tcl_NewIntObj(DefaultLabel->lab_offset.p_y));
+				Tcl_NewStringObj(laboffy, -1));
 		    Tcl_SetObjResult(magicinterp, lobj);
 #else
-		    TxPrintf("%d %d\n", DefaultLabel->lab_offset.p_x,
-				DefaultLabel->lab_offset.p_y);
+		    TxPrintf("%s %s\n", laboffx, laboffy);
 #endif
 		}
 		else
@@ -2377,9 +2426,12 @@ CmdSetLabel(
 	    }
 	    else if (EditCellUse)
 	    {
-		SelEnumLabelsMirror(&DBAllTypeBits, TRUE, (bool *)NULL,
-			cmdLabelOffsetFunc, (locargc != 2) ?
-			(ClientData)&offset : (ClientData)NULL);
+		if (locargc == 2)
+		    SelEnumLabels(&DBAllTypeBits, TRUE, (bool *)NULL,
+				cmdLabelOffsetFunc, (ClientData)NULL);
+		else
+		    SelEnumLabelsMirror(&DBAllTypeBits, TRUE, (bool *)NULL,
+				cmdLabelOffsetFunc, (ClientData)&offset);
 	    }
 	    break;
 
@@ -2443,10 +2495,12 @@ CmdSetLabel(
 		    rect.r_ytop = cmdScaleCoord(w, cmd->tx_argv[argstart + 4],
 				TRUE, FALSE, 1);
 		}
-		SelEnumLabelsMirror(&DBAllTypeBits, TRUE, (bool *)NULL,
-				cmdLabelRectFunc,
-				((locargc == 6) || (locargc == 3)) ?
-				(ClientData)&rect : (ClientData)NULL);
+		if ((locargc == 3) || (locargc == 6))
+		    SelEnumLabelsMirror(&DBAllTypeBits, TRUE, (bool *)NULL,
+				cmdLabelRectFunc, (ClientData)&rect);
+		else
+		    SelEnumLabels(&DBAllTypeBits, TRUE, (bool *)NULL,
+				cmdLabelRectFunc, (ClientData)NULL);
 	    }
 	    break;
 
@@ -2472,9 +2526,12 @@ CmdSetLabel(
 	    }
 	    else if (EditCellUse)
 	    {
-		SelEnumLabelsMirror(&DBAllTypeBits, TRUE, (bool *)NULL,
-			cmdLabelRotateFunc, (locargc == 3) ?
-			(ClientData)&rotate : (ClientData)NULL);
+		if (locargc == 2)
+		    SelEnumLabels(&DBAllTypeBits, TRUE, (bool *)NULL,
+				cmdLabelRotateFunc, (ClientData)NULL);
+		else
+		    SelEnumLabelsMirror(&DBAllTypeBits, TRUE, (bool *)NULL,
+				cmdLabelRotateFunc, (ClientData)&rotate);
 	    }
 	    break;
 
@@ -2506,9 +2563,12 @@ CmdSetLabel(
 	    }
 	    else if (EditCellUse)
 	    {
-		SelEnumLabels(&DBAllTypeBits, TRUE, (bool *)NULL,
-			cmdLabelStickyFunc, (locargc == 3) ?
-			(ClientData)&flags : (ClientData)NULL);
+		if (locargc == 2)
+		    SelEnumLabels(&DBAllTypeBits, TRUE, (bool *)NULL,
+				cmdLabelStickyFunc, (ClientData)NULL);
+		else
+		    SelEnumLabelsMirror(&DBAllTypeBits, TRUE, (bool *)NULL,
+				cmdLabelStickyFunc, (ClientData)&flags);
 	    }
 	    break;
 
@@ -2547,9 +2607,12 @@ CmdSetLabel(
 	    }
 	    else if (EditCellUse)
 	    {
-		SelEnumLabels(&DBAllTypeBits, TRUE, (bool *)NULL,
-			cmdLabelLayerFunc, (locargc == 3) ?
-			(ClientData)&ttype : (ClientData)NULL);
+		if (locargc == 2)
+		    SelEnumLabels(&DBAllTypeBits, TRUE, (bool *)NULL,
+				cmdLabelLayerFunc, (ClientData)NULL);
+		else
+		    SelEnumLabelsMirror(&DBAllTypeBits, TRUE, (bool *)NULL,
+				cmdLabelLayerFunc, (ClientData)&ttype);
 	    }
 	    break;
 
@@ -2884,16 +2947,39 @@ CmdSnap(
 	TxPrintf("Usage: snap [internal | lambda | user]\n");
 	return;
     }
+
+    /* Backwards compatibility:  Use of "snap" to set units display and
+     * parsing has been deprecated as of February 2026.  However, as this
+     * is rather disruptive to existing scripts which use "snap" to change
+     * the parsing of units, then the following measure is being taken
+     * (for now, anyway):  If DBWUnits is set to DBW_UNITS_DEFAULT, then
+     * "snap internal" will set DBWUnits as well as DBWSnapToGrid.  If
+     * DBWUnits is changed first (e.g., "units internal"), then "snap" will
+     * affect only the snap grid.  The older usage will be accompanied by a
+     * warning message.  Note that backwards compatibility is being kept
+     * only in the case of "snap internal", which was commonly used in
+     * scripts to make sure that all units were interpreted as internal
+     * units.
+     */
+    if ((DBWUnits == DBW_UNITS_DEFAULT) && (n == SNAP_INTERNAL))
+    {
+	DBWUnits = DBW_UNITS_INTERNAL;
+	TxError("Warning:  snap setting is also changing units.  This usage "
+		"is deprecated\nand may be removed in the future.  Use "
+		"\"units\" to change units, and\nchange units before "
+		"setting snap to keep this message from appearing.\n");
+    }
+
     switch (n)
     {
 	case SNAP_OFF: case SNAP_INTERNAL:
-	    DBWSnapToGrid = DBW_SNAP_INTERNAL;
+	    DBWSnapToGrid = DBW_UNITS_INTERNAL;
 	    return;
 	case SNAP_LAMBDA:
-	    DBWSnapToGrid = DBW_SNAP_LAMBDA;
+	    DBWSnapToGrid = DBW_UNITS_LAMBDA;
 	    return;
 	case SNAP_GRID: case SNAP_USER: case SNAP_ON:
-	    DBWSnapToGrid = DBW_SNAP_USER;
+	    DBWSnapToGrid = DBW_UNITS_USER;
 	    return;
     }
 
@@ -2901,20 +2987,18 @@ printit:
     if (n == SNAP_LIST)  /* list */
 #ifdef MAGIC_WRAPPER
 	Tcl_SetResult(magicinterp,
-		(DBWSnapToGrid == DBW_SNAP_INTERNAL) ? "internal" :
-		((DBWSnapToGrid == DBW_SNAP_LAMBDA) ? "lambda" : "user"),
+		(DBWSnapToGrid == DBW_UNITS_INTERNAL) ? "internal" :
+		((DBWSnapToGrid == DBW_UNITS_LAMBDA) ? "lambda" : "user"),
 		TCL_VOLATILE);
 #else
-	TxPrintf("%s\n", (DBWSnapToGrid == DBW_SNAP_INTERNAL) ? "internal" :
-		((DBWSnapToGrid == DBW_SNAP_LAMBDA) ? "lambda" : "user"));
+	TxPrintf("%s\n", (DBWSnapToGrid == DBW_UNITS_INTERNAL) ? "internal" :
+		((DBWSnapToGrid == DBW_UNITS_LAMBDA) ? "lambda" : "user"));
 #endif
     else
 	TxPrintf("Box is aligned to %s grid\n",
-		(DBWSnapToGrid == DBW_SNAP_INTERNAL) ? "internal" :
-		((DBWSnapToGrid == DBW_SNAP_LAMBDA) ? "lambda" : "user"));
+		(DBWSnapToGrid == DBW_UNITS_INTERNAL) ? "internal" :
+		((DBWSnapToGrid == DBW_UNITS_LAMBDA) ? "lambda" : "user"));
 }
-
-
 
 /*
  * ----------------------------------------------------------------------------

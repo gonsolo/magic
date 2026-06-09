@@ -38,9 +38,9 @@ static const char rcsid[] __attribute__ ((unused)) = "$Header: /usr/cvsroot/magi
 #include "dbwind/dbwind.h"	/* for DBWclientID */
 #include "commands/commands.h"  /* for module auto-load */
 #include "textio/txcommands.h"
+#include "extract/extract.h"	/* for extDevTable */
 #include "extflat/extflat.h"
 #include "extflat/EFint.h"
-#include "extract/extract.h"	/* for extDevTable */
 #include "utils/runstats.h"
 
 #include "ext2spice/ext2spice.h"
@@ -1689,23 +1689,43 @@ subcktVisit(
     	HashStartSearch(&hs);
 	while ((he = HashNext(&def->def_nodes, &hs)))
     	{
+	    bool found = FALSE;
+
 	    sname = (EFNodeName *) HashGetValue(he);
 	    if (sname == NULL) continue;
 	    snode = sname->efnn_node;
 
 	    if ((snode == NULL) || !(snode->efnode_flags & EF_PORT)) continue;
 
+	    portidx = snode->efnode_name->efnn_port;
+
+	    if (portidx >= 0)
+	    {
+		if (nodeList[portidx] == NULL)
+		{
+		    nodeList[portidx] = snode->efnode_name;
+		    found = TRUE;
+		}
+	    }
+
+	    /* Normally there should be a port associated with snode, but
+	     * if not, go looking for one in the node name aliases.
+	     */
 	    for (nodeName = sname; nodeName != NULL; nodeName = nodeName->efnn_next)
 	    {
+		if (found == TRUE) break;
+
 		portidx = nodeName->efnn_port;
 		if (portidx < 0) continue;
 		if (nodeList[portidx] == NULL)
 		{
 		    nodeList[portidx] = nodeName;
+		    found = TRUE;
 		}
 		else if (EFHNBest(nodeName->efnn_hier, nodeList[portidx]->efnn_hier))
 		{
 		    nodeList[portidx] = nodeName;
+		    found = TRUE;
 		}
 	    }
 	}
@@ -1932,6 +1952,7 @@ topVisit(
     {
 	char stmp[MAX_STR_SIZE];
 	int portidx;
+	bool found = FALSE;
 
 	sname = (EFNodeName *) HashGetValue(he);
 	if (sname == NULL) continue;	/* Should not happen */
@@ -1939,33 +1960,68 @@ topVisit(
 	snode = sname->efnn_node;
 	if ((!snode) || (!(snode->efnode_flags & EF_PORT))) continue;
 
+	/* Found a node which is also a port */
+
+	portidx = snode->efnode_name->efnn_port;
+	if (portidx >= 0)
+	{
+	    if (sorted_ports[portidx] == NULL)
+	    {
+		if ((def->def_flags & DEF_ABSTRACT))
+		{
+		    EFHNSprintf(stmp, sname->efnn_hier);
+		    pname = stmp;
+		}
+		else
+		    pname = nodeSpiceName(snode->efnode_name->efnn_hier, NULL);
+
+		hep = HashLookOnly(&portNameTable, pname);
+		if (hep == (HashEntry *)NULL)
+		{
+		    hep = HashFind(&portNameTable, pname);
+		    HashSetValue(hep, (ClientData)(pointertype)portidx);
+		    sorted_ports[portidx] = StrDup((char **)NULL, pname);
+		}
+		else
+		{
+		    /* Node that was unassigned has been found to be
+		     * a repeat (see NOTE at top), so make sure its
+		     * port number is set correctly.
+		     */
+		    snode->efnode_name->efnn_port = (int)(pointertype)HashGetValue(hep);
+		}
+		found = TRUE;
+	    }
+	}
+
+	if (!(def->def_flags & DEF_ABSTRACT))
+	    heh = HashLookOnly(&efNodeHashTable, (char *)snode->efnode_name->efnn_hier);
+
+	/* Might need to check here for a port that was optimized out? */
+
+	/* If snode is flagged as a port but no port number was found, then
+	 * check the all of the node's name entries to see if any of them has
+	 * a port number.
+	 */
+
 	for (nodeName = sname; nodeName != NULL; nodeName = nodeName->efnn_next)
 	{
+	    if (found == TRUE) break;
 	    portidx = nodeName->efnn_port;
 	    if (portidx < 0) continue;
 
-	    /* Check if the same hierName is recorded in the flattened/optimized
-	     * def's efNodeHashTable.  If not, then it has been optimized out
-	     * and should be removed from the port list.
-	     */
-	    if (def->def_flags & DEF_ABSTRACT)
-    	        heh = HashLookOnly(&efNodeHashTable, (char *)nodeName->efnn_hier);
-	    else
-    	        heh = HashLookOnly(&efNodeHashTable,
-			    (char *)snode->efnode_name->efnn_hier);
-
-	    /* If view is abstract, rely on the given port name, not
-	     * the node.  Otherwise, artifacts of the abstract view
-	     * may cause nodes to be merged and the names lost.
-	     */
-
 	    if (def->def_flags & DEF_ABSTRACT)
 	    {
+    	        heh = HashLookOnly(&efNodeHashTable, (char *)nodeName->efnn_hier);
+
+		/* If view is abstract, rely on the given port name, not
+		 * the node.  Otherwise, artifacts of the abstract view
+		 * may cause nodes to be merged and the names lost.
+		 */
 		EFHNSprintf(stmp, nodeName->efnn_hier);
 		pname = stmp;
 	    }
 	    else
-		// pname = nodeSpiceName(snode->efnode_name->efnn_hier, NULL);
 		pname = nodeSpiceName(nodeName->efnn_hier, NULL);
 
 	    if (heh == (HashEntry *)NULL) /* pname now resolved for log output */
@@ -1983,7 +2039,10 @@ topVisit(
 	    	hep = HashFind(&portNameTable, pname);
 		HashSetValue(hep, (ClientData)(pointertype)nodeName->efnn_port);
 		if (sorted_ports[portidx] == NULL)
+		{
 		    sorted_ports[portidx] = StrDup((char **)NULL, pname);
+		    found = TRUE;
+		}
 	    }
 	    else
 	    {
@@ -2758,7 +2817,7 @@ spcdevVisit(
 	case DEV_FET:
 	    if (source == drain)
 	    {
-		if (esFormat == NGSPICE) fprintf(esSpiceF, "$ ");
+		if (esFormat == NGSPICE) fprintf(esSpiceF, "; ");
 		fprintf(esSpiceF, "** SOURCE/DRAIN TIED\n");
 	    }
 	    break;
@@ -2766,7 +2825,7 @@ spcdevVisit(
 	default:
 	    if (gate == source)
 	    {
-		if (esFormat == NGSPICE) fprintf(esSpiceF, "$ ");
+		if (esFormat == NGSPICE) fprintf(esSpiceF, "; ");
 		fprintf(esSpiceF, "** SHORTED DEVICE\n");
 	    }
 	    break;
@@ -2842,13 +2901,17 @@ spcdevVisit(
 	    case DEV_VOLT:
 		fprintf(esSpiceF, "%d", esVoltNum++);
 		break;
+	    case DEV_RSUBCKT:
 	    case DEV_SUBCKT:
 	    case DEV_VERILOGA:
-	    case DEV_RSUBCKT:
 	    case DEV_CSUBCKT:
 	    case DEV_DSUBCKT:
 	    case DEV_MSUBCKT:
 		fprintf(esSpiceF, "%d", esSbckNum++);
+		if ((dev->dev_class == DEV_RSUBCKT) && esDoResistorTee)
+		    /* For resistor tee networks, use, e.g.,	*/
+		    /* "X1A" and "X1B", for clarity		*/
+		    fprintf(esSpiceF, "A");
 		break;
 	    default:
 		fprintf(esSpiceF, "%d", esDevNum++);
@@ -2923,7 +2986,15 @@ spcdevVisit(
 		if (dev->dev_nterm > 1)
 		    spcdevOutNode(hierName, source->dterm_node->efnode_name->efnn_hier,
 				name, esSpiceF);
-		if (dev->dev_nterm > 2)
+		if ((dev->dev_class == DEV_RSUBCKT) && esDoResistorTee)
+		{
+		    l /= 2;	/* Halve the resistor.  Note that this may introduce
+				 * error if l is an odd value.
+				 */
+		    spcdevOutNode(hierName, gate->dterm_node->efnode_name->efnn_hier,
+				name, esSpiceF);
+		}
+		else if (dev->dev_nterm > 2)
 		    spcdevOutNode(hierName, drain->dterm_node->efnode_name->efnn_hier,
 				name, esSpiceF);
 	    }
@@ -2970,6 +3041,53 @@ spcdevVisit(
 	    spcWriteParams(dev, hierName, scale, l, w, sdM, FALSE);
 	    if (sdM != 1.0)
 		fprintf(esSpiceF, " M=%g", sdM);
+	    break;
+
+	    if (dev->dev_class == DEV_RSUBCKT && esDoResistorTee)
+	    {
+		/* Write the second half of the "Tee" resistor when
+		 * the resistor is type DEV_RSUBCKT and not DEV_RES.
+		 */
+		fprintf(esSpiceF, "\n%c%dB", devchar, esSbckNum - 1);
+
+		spcdevOutNode(hierName, gate->dterm_node->efnode_name->efnn_hier,
+			name, esSpiceF);
+		spcdevOutNode(hierName, drain->dterm_node->efnode_name->efnn_hier,
+			name, esSpiceF);
+
+		/* Get the device parameters now, and check if the substrate is	*/
+		/* passed as a parameter rather than as a node.			*/
+
+		plist = efGetDeviceParams(EFDevTypes[dev->dev_type]);
+		for (pptr = plist; pptr != NULL; pptr = pptr->parm_next)
+		    if (pptr->parm_type[0] == 's')
+			break;
+
+		if ((pptr == NULL) && subnode)
+		{
+		    fprintf(esSpiceF, " ");
+		    subnodeFlat = spcdevSubstrate(hierName,
+				subnode->efnode_name->efnn_hier,
+				dev->dev_type, esSpiceF);
+
+		    /* There is a substrate pin on the resistor subcircuit, so assume
+		     * that the substrate cap is part of the subcircuit model, and
+		     * zero it.
+		     */
+                    gate->dterm_node->efnode_cap = 0;
+		}
+
+		/* CDL format support:  Output a slash followed by a space. */
+		if (esFormat == CDL) fprintf(esSpiceF, " /");
+		fprintf(esSpiceF, " %s", EFDevTypes[dev->dev_type]);
+
+		/* Write all requested parameters to the subcircuit call.	*/
+
+		sdM = getCurDevMult();
+		spcWriteParams(dev, hierName, scale, l, w, sdM, FALSE);
+		if (sdM != 1.0)
+		    fprintf(esSpiceF, " M=%g", sdM);
+	    }
 	    break;
 
 	case DEV_RES:
@@ -3081,6 +3199,7 @@ spcdevVisit(
 
 	    if (!has_model)
 	    {
+		fprintf(esSpiceF, " ");
 		esSIvalue(esSpiceF, 1.0E-15 * (double)sdM * (double)dev->dev_cap);
 		spcWriteParams(dev, hierName, scale, l, w, sdM, FALSE);
 	    }
@@ -3127,6 +3246,7 @@ spcdevVisit(
 
 	    if (!has_model)
 	    {
+		fprintf(esSpiceF, " ");
 		esSIvalue(esSpiceF, 1.0E-15 * (double)sdM * (double)dev->dev_cap);
 		spcWriteParams(dev, hierName, scale, l, w, sdM, FALSE);
 	    }
@@ -3991,7 +4111,7 @@ spcnodeVisit(
 	static char ntmp[MAX_STR_SIZE];
 
 	EFHNSprintf(ntmp, hierName);
-	if (esFormat == NGSPICE) fprintf(esSpiceF, "$ ");
+	if (esFormat == NGSPICE) fprintf(esSpiceF, "; ");
 	fprintf(esSpiceF, "** %s == %s\n", ntmp, nsn);
     }
     cap = cap  / 1000;
@@ -4001,14 +4121,14 @@ spcnodeVisit(
 	esSIvalue(esSpiceF, 1.0E-15 * cap);
 	if (!isConnected)
 	{
-	    if (esFormat == NGSPICE) fprintf(esSpiceF, " $");
+	    if (esFormat == NGSPICE) fprintf(esSpiceF, " ;");
 	    fprintf(esSpiceF, " **FLOATING");
 	}
 	fprintf(esSpiceF, "\n");
     }
     if (node->efnode_attrs && !esNoAttrs)
     {
-	if (esFormat == NGSPICE) fprintf(esSpiceF, " $ ");
+	if (esFormat == NGSPICE) fprintf(esSpiceF, " ; ");
 	fprintf(esSpiceF, "**nodeattr %s :",nsn );
 	for (fmt = " %s", ap = node->efnode_attrs; ap; ap = ap->efa_next)
 	{

@@ -140,9 +140,8 @@ resCurrentPrintFunc(node, resistor, filename)
     for (workingDev = node->rn_te; workingDev != NULL;
      				workingDev = workingDev->te_nextt)
     {
-          if ((workingDev->te_thist->rd_status & RES_DEV_PLUG) ||
-	  	workingDev->te_thist->rd_gate != node)
-	  i_sum += workingDev->te_thist->rd_i;
+        if (workingDev->te_thist->rd_gate != node)
+	    i_sum += workingDev->te_thist->rd_i;
     }
     if (i_sum != 0.0)
     {
@@ -161,7 +160,7 @@ resCurrentPrintFunc(node, resistor, filename)
 void
 ResDeviceCounts()
 {
-    int i,j,k;
+    int i, j, k;
     resNode *n;
     resDevice *t;
     resResistor *r;

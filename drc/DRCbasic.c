@@ -27,6 +27,8 @@ static char rcsid[] __attribute__ ((unused)) = "$Header: /usr/cvsroot/magic-8.0/
 #include <stdio.h>
 #include <string.h>		// for memcpy()
 #include <math.h>		// for sqrt() for diagonal check
+
+#include "tcltk/tclmagic.h"
 #include "utils/magic.h"
 #include "utils/geometry.h"
 #include "tiles/tile.h"
@@ -36,7 +38,9 @@ static char rcsid[] __attribute__ ((unused)) = "$Header: /usr/cvsroot/magic-8.0/
 #include "utils/signals.h"
 #include "utils/maxrect.h"
 #include "utils/malloc.h"
+#include "utils/undo.h"
 #include "textio/textio.h"
+#include "cif/CIFint.h"
 
 int dbDRCDebug = 0;
 
@@ -48,7 +52,7 @@ int dbDRCDebug = 0;
 static DRCCookie drcOverlapCookie = {
     0, 0, 0, 0,
     { {0} }, { {0} },
-    0, 0, 0,
+    0, DRC_EXCEPTION_NONE, 0, 0,
     DRC_OVERLAP_TAG,
     (DRCCookie *) NULL
 };
@@ -62,7 +66,33 @@ extern MaxRectsData *drcCanonicalMaxwidth();
 /*
  *-----------------------------------------------------------------------
  *
- * drcCifPointToSegment
+ * drcFoundOneFunc --
+ *
+ *	Simple callback for a plane search on a mask-hint plane inside
+ *	a DRC check area.
+ *
+ * Results:
+ *	Return 1 always, indicating that a tile has been found in the
+ *	DRC search area, and the search can end.
+ *
+ * Side effects:
+ *	None.
+ *
+ *-----------------------------------------------------------------------
+ */
+
+int
+drcFoundOneFunc(Tile *tile,
+    TileType dinfo,
+    ClientData cdata)
+{
+    return 1;
+}
+
+/*
+ *-----------------------------------------------------------------------
+ *
+ * drcCifPointToSegment --
  *
  *	Euclidean-distance point-to-segment distance (squared)
  *	calculation (borrowed from XCircuit)
@@ -468,11 +498,38 @@ DRCBasicCheck (celldef, checkRect, clipRect, function, cdata)
 	DBResetTilePlane(celldef->cd_planes[planeNum], DRC_UNPROCESSED);
         (void) DBSrPaintArea ((Tile *) NULL, celldef->cd_planes[planeNum],
 		checkRect, &DBAllTypeBits, drcTile, (ClientData) &arg);
+
+#ifdef MAGIC_WRAPPER
+	/* Execute pending Tcl events, so the DRC process doesn't block.    */
+
+	/* WARNING:  This code cannot be enabled until some method is
+	 * worked out to determine if any event resulted in a change
+	 * to the DRC check plane which would invalidate the current
+	 * search.  If so, the search must end immediately and the
+	 * area being checked must be reinstated.  The code was added
+	 * to see how it speeds up the response time of magic when
+	 * some of the DRC rules are compute-intensive.  It speeds up
+	 * performance enough that it is worthwhile to implement the
+	 * method just mentioned.
+	 */
+	#if 0
+	UndoEnable();
+	while (Tcl_DoOneEvent(TCL_DONT_WAIT));
+	UndoDisable();
+	#endif
+#endif
     }
     drcCifCheck(&arg);
     if (arg.dCD_rlist != NULL) freeMagic(arg.dCD_rlist);
     return (errors);
 }
+
+/* Expect that keeping around 3 MaxRectsData records should be sufficient
+ * to avoid recomputing drcCanonicalMaxwidth() multiple times.  Note that
+ * if a PDK sets up multiple rules on an edge which all require running
+ * drcCanonicalMaxwidth(), then this cache size may need to be revisited.
+ */
+#define MAXRECTSCACHE 3
 
 /*
  * ----------------------------------------------------------------------------
@@ -510,6 +567,19 @@ drcTile (tile, dinfo, arg)
     bool firsttile;
     int triggered;
     int cdist, dist, ccdist, result;
+
+    /* Keep up to three MaxRectsData records to avoid doing the	same
+     * expensive computation more than once.
+     *
+     * mrdcache[0] will be used for the tpleft tile, since it will never
+     * be reused.  mrdcache[1] and mrdcache[2] will be used for the tile
+     * itself.  Note that if more than 2 DRCCookie entries for the same
+     * edge require drcCanonicalMaxwidth(), then mrdcache[2] will be
+     * re-used so that at least mrdcache[1] is always a cache hit.
+     */
+
+    static MaxRectsData *mrdcache[MAXRECTSCACHE] = {NULL, NULL, NULL};
+    DRCCookie *cptrcache;
 
     arg->dCD_constraint = &errRect;
 
@@ -652,6 +722,8 @@ drcTile (tile, dinfo, arg)
 	DRCstatEdges++;
     }
 
+    cptrcache = NULL;
+
     /*
      * Check design rules along a vertical boundary between two tiles.
      *
@@ -696,7 +768,6 @@ drcTile (tile, dinfo, arg)
 	int edgeX = LEFT(tile);
 
 	firsttile = TRUE;
-	mrd = NULL;
         for (tpleft = BL(tile); BOTTOM(tpleft) < top; tpleft = RT(tpleft))
         {
 	    /* Get the tile types to the left and right of the edge */
@@ -727,6 +798,44 @@ drcTile (tile, dinfo, arg)
 	    for (cptr = DRCCurStyle->DRCRulesTbl[to][tt]; cptr != (DRCCookie *) NULL;
 			cptr = cptr->drcc_next)
 	    {
+		/* Handle rule exceptions and exemptions */
+		if (cptr->drcc_exception != DRC_EXCEPTION_NONE)
+		{
+		    PropertyRecord *proprec;
+		    bool propfound, isinside = FALSE;
+		    char *name;
+		    int idx = cptr->drcc_exception & ~DRC_EXCEPTION_MASK;
+		    name = DRCCurStyle->DRCExceptionList[idx];
+
+		    /* Is there any exception area defined? */
+		    proprec = DBPropGet(arg->dCD_celldef, name, &propfound);
+
+		    /* If an exception area exists, is the error edge inside? */
+		    if (propfound)
+		    {
+			Rect redge;
+
+			redge.r_xbot = redge.r_xtop = edgeX;
+			redge.r_ybot = edgeBot;
+			redge.r_ytop = edgeTop;
+
+			if (DBSrPaintArea(PlaneGetHint(proprec->prop_value.prop_plane),
+				proprec->prop_value.prop_plane,
+				&redge, &CIFSolidBits, drcFoundOneFunc,
+				(ClientData)NULL) == 1)
+			    isinside = TRUE;
+		    }
+
+		    /* Exemption rules are ignored if the edge is inside
+		     * an exception area.  Exception rules are ignored if
+		     * the edge is outside an exception area.
+		     */
+		    if (!isinside && ((cptr->drcc_exception & DRC_EXCEPTION_MASK) == 0))
+			continue;
+		    if (isinside && ((cptr->drcc_exception & DRC_EXCEPTION_MASK) != 0))
+			continue;
+		}
+
 	    	/* DRC_ANGLES_90 and DRC_SPLITTILE rules are handled by	*/
 		/* the code above for non-Manhattan shapes and do not	*/
 		/* need to be processed again.				*/
@@ -748,6 +857,7 @@ drcTile (tile, dinfo, arg)
 		}
 
 		DRCstatRules++;
+		if (!triggered) mrd = NULL;
 
 		if (cptr->drcc_flags & DRC_AREA)
 		{
@@ -769,12 +879,23 @@ drcTile (tile, dinfo, arg)
 
 		    if (cptr->drcc_flags & DRC_REVERSE)
 		    {
-			mrd = drcCanonicalMaxwidth(tpleft, GEO_WEST, arg, cptr);
+			mrd = drcCanonicalMaxwidth(tpleft, GEO_WEST, arg, cptr,
+					&mrdcache[0]);
 			triggered = 0;
 		    }
-		    else if (firsttile)
+		    else
 		    {
-			mrd = drcCanonicalMaxwidth(tile, GEO_EAST, arg, cptr);
+			if (cptrcache == NULL)
+			{
+			    mrd = drcCanonicalMaxwidth(tile, GEO_EAST, arg, cptr,
+					&mrdcache[1]);
+			    cptrcache = cptr;
+			}
+			else if (cptrcache != cptr)
+			    mrd = drcCanonicalMaxwidth(tile, GEO_EAST, arg, cptr,
+					&mrdcache[2]);
+			else
+			    mrd = (mrdcache[1]->entries == 0) ? NULL : mrdcache[1];
 			triggered = 0;
 		    }
 		    if (!trigpending || (DRCCurStyle->DRCFlags
@@ -1065,6 +1186,8 @@ drcTile (tile, dinfo, arg)
         }
     }
 
+    cptrcache = NULL;
+
     /*
      * Check design rules along a horizontal boundary between two tiles.
      *
@@ -1104,7 +1227,6 @@ drcTile (tile, dinfo, arg)
 
 	/* Go right across bottom of tile */
 	firsttile = TRUE;
-	mrd = NULL;
         for (tpbot = LB(tile); LEFT(tpbot) < right; tpbot = TR(tpbot))
         {
 	    /* Get the tile types to the top and bottom of the edge */
@@ -1136,6 +1258,44 @@ drcTile (tile, dinfo, arg)
 	    for (cptr = DRCCurStyle->DRCRulesTbl[to][tt]; cptr != (DRCCookie *) NULL;
 				cptr = cptr->drcc_next)
 	    {
+		/* Handle rule exceptions and exemptions */
+		if (cptr->drcc_exception != DRC_EXCEPTION_NONE)
+		{
+		    PropertyRecord *proprec;
+		    bool propfound, isinside = FALSE;
+		    char *name;
+		    int idx = cptr->drcc_exception & ~DRC_EXCEPTION_MASK;
+		    name = DRCCurStyle->DRCExceptionList[idx];
+
+		    /* Is there any exception area defined? */
+		    proprec = DBPropGet(arg->dCD_celldef, name, &propfound);
+
+		    /* If an exception area exists, is the error edge inside? */
+		    if (propfound)
+		    {
+			Rect redge;
+
+			redge.r_ybot = redge.r_ytop = edgeY;
+			redge.r_xbot = edgeLeft;
+			redge.r_xtop = edgeRight;
+
+			if (DBSrPaintArea(PlaneGetHint(proprec->prop_value.prop_plane),
+				proprec->prop_value.prop_plane,
+				&redge, &CIFSolidBits, drcFoundOneFunc,
+				(ClientData)NULL) == 1)
+			    isinside = TRUE;
+		    }
+
+		    /* Exemption rules are ignored if the edge is inside
+		     * an exception area.  Exception rules are ignored if
+		     * the edge is outside an exception area.
+		     */
+		    if (!isinside && ((cptr->drcc_exception & DRC_EXCEPTION_MASK) == 0))
+			continue;
+		    if (isinside && ((cptr->drcc_exception & DRC_EXCEPTION_MASK) != 0))
+			continue;
+		}
+
 	    	/* DRC_ANGLES_90 and DRC_SPLITTILE rules are handled by	*/
 		/* the code above for non-Manhattan shapes and do not	*/
 		/* need to be processed again.				*/
@@ -1157,6 +1317,7 @@ drcTile (tile, dinfo, arg)
 		}
 
 		DRCstatRules++;
+		if (!triggered) mrd = NULL;
 
 		/* top to bottom */
 
@@ -1173,12 +1334,23 @@ drcTile (tile, dinfo, arg)
 
 		    if (cptr->drcc_flags & DRC_REVERSE)
 		    {
-			mrd = drcCanonicalMaxwidth(tpbot, GEO_SOUTH, arg, cptr);
+			mrd = drcCanonicalMaxwidth(tpbot, GEO_SOUTH, arg, cptr,
+					&mrdcache[0]);
 			triggered = 0;
 		    }
-		    else if (firsttile)
+		    else
 		    {
-			mrd = drcCanonicalMaxwidth(tile, GEO_NORTH, arg, cptr);
+			if (cptrcache == NULL)
+			{
+			    mrd = drcCanonicalMaxwidth(tile, GEO_NORTH, arg, cptr,
+					&mrdcache[1]);
+			    cptrcache = cptr;
+			}
+			else if (cptrcache != cptr)
+			    mrd = drcCanonicalMaxwidth(tile, GEO_NORTH, arg, cptr,
+					&mrdcache[2]);
+			else
+			    mrd = (mrdcache[1]->entries == 0) ? NULL : mrdcache[1];
 			triggered = 0;
 		    }
 		    if (!trigpending || (DRCCurStyle->DRCFlags

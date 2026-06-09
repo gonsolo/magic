@@ -209,52 +209,41 @@ typedef struct _maskHintsData
 {
     Transform *mh_trans;
     CellDef *mh_def;
+    Plane *mh_plane;
 } MaskHintsData;
 
 /*
  * ----------------------------------------------------------------------------
  *
- * cifMaskHints --
+ * cifCopyMaskHintFunc --
  *
- *	Copy a mask hint into a target cell by adding it to the
- *	property list of the target cell.  If the target cell already
- *	has the same mask hint key, then the mask hint value is
- *	appended to the property in the target cell def.
+ *	Callback function used by cifFlatMaskHints.  Transforms a tile
+ *	from the original plane and paints it into the target plane,
+ *	both of which are properties.
  *
- * Returns:
- *	0 to keep the search going.
+ * Results:
+ *	Zero to keep the search going.
  *
  * Side effects:
- *	Modifies properties of the target cell def.
+ *	Paints geometry into the target plane.
  *
  * ----------------------------------------------------------------------------
  */
 
-/* DEPRECATED */
 int
-cifMaskHints(
-    char *name,
-    char *value,
-    CellDef *targetDef)
+cifCopyMaskHintFunc(Tile *tile,
+    TileType dinfo,
+    ClientData cdata)
 {
-    char *propvalue, *newval;
-    bool propfound;
+    MaskHintsData *mhd = (MaskHintsData *)cdata;
+    Rect r, newr;
 
-    if (!strncmp(name, "MASKHINTS_", 10))
-    {
-	/* Check if name exists already in the flattened cell */
-	propvalue = (char *)DBPropGet(targetDef, name, &propfound);
-	if (propfound)
-	{
-	    /* Append value to the property */
-	    newval = mallocMagic(strlen(value) + strlen(propvalue) + 2);
-	    sprintf(newval, "%s %s", propvalue, value);
-	}
-	else
-	    newval = StrDup((char **)NULL, value);
+    TiToRect(tile, &r);
 
-	DBPropPut(targetDef, name, newval);
-    }
+    /* Transform tile area to coordinates of mhd->mh_plane and paint */
+    GeoTransRect(mhd->mh_trans, &r, &newr);
+    DBPaintPlane(mhd->mh_plane, &newr, CIFPaintTable, (PaintUndoInfo *)NULL);
+
     return 0;
 }
 
@@ -264,8 +253,8 @@ cifMaskHints(
  * cifFlatMaskHints --
  *
  *	Copy a mask hint into a flattened cell by transforming it into the
- *	coordinate system of the flattened cell, and adding it to the
- *	property list of the flattened cell.
+ *	coordinate system of the flattened cell, and painting it into the
+ *	property plane of the flattened cell.
  *
  * Returns:
  *	0 to keep the search going.
@@ -279,67 +268,40 @@ cifMaskHints(
 int
 cifFlatMaskHints(
     char *name,
-    char *value,
+    PropertyRecord *proprec,
     MaskHintsData *mhd)
 {
     Rect r, newr;
     char *vptr, *newval, *lastval, *propvalue;
     bool propfound;
-    int lastlen, numvals;
+    int i, lastlen, numvals;
+    PropertyRecord *newproprec, *oldproprec;
+    Plane *plane;
 
     if (!strncmp(name, "MASKHINTS_", 10))
     {
-	newval = (char *)NULL;
-	vptr = value;
-	while (*vptr != '\0')
-	{
-	    numvals = sscanf(vptr, "%d %d %d %d", &r.r_xbot, &r.r_ybot,
-			&r.r_xtop, &r.r_ytop);
-	    if (numvals == 4)
-	    {
-		/* Transform rectangle to top level coordinates */
-		GeoTransRect(mhd->mh_trans, &r, &newr);
-		lastval = newval;
-		lastlen = (lastval) ? strlen(lastval) : 0;
-		newval = mallocMagic(40 + lastlen);
-		if (lastval)
-		    strcpy(newval, lastval);
-		else
-		    *newval = '\0';
-		sprintf(newval + lastlen, "%s%d %d %d %d", (lastval) ? " " : "",
-			newr.r_xbot, newr.r_ybot, newr.r_xtop, newr.r_ytop);
-		if (lastval) freeMagic(lastval);
-
-		/* Parse through the four values and check if there's more */
-		while (*vptr && isspace(*vptr)) vptr++;
-		while (*vptr && !isspace(*vptr)) vptr++;
-		while (*vptr && isspace(*vptr)) vptr++;
-		while (*vptr && !isspace(*vptr)) vptr++;
-		while (*vptr && isspace(*vptr)) vptr++;
-		while (*vptr && !isspace(*vptr)) vptr++;
-		while (*vptr && isspace(*vptr)) vptr++;
-		while (*vptr && !isspace(*vptr)) vptr++;
-		while (*vptr && isspace(*vptr)) vptr++;
-	    }
-	    else
-	    {
-		TxError("MASKHINTS_%s:  Expected 4 values, found only %d\n",
-				name + 10, numvals);
-		break;
-	    }
-	}
-
 	/* Check if name exists already in the flattened cell */
-	propvalue = (char *)DBPropGet(mhd->mh_def, name, &propfound);
+	oldproprec = (PropertyRecord *)DBPropGet(mhd->mh_def, name, &propfound);
 	if (propfound)
 	{
-	    /* Append newval to the property */
-	    lastval = newval;
-	    newval = mallocMagic(strlen(lastval) + strlen(propvalue) + 2);
-	    sprintf(newval, "%s %s", propvalue, lastval);
-	    freeMagic(lastval);
+	    ASSERT(oldproprec->prop_type == PROPERTY_TYPE_PLANE,
+			"cifFlatMaskHints");
+	    plane = oldproprec->prop_value.prop_plane;
 	}
-	DBPropPut(mhd->mh_def, name, newval);
+	else
+	{
+	    newproprec = (PropertyRecord *)mallocMagic(sizeof(PropertyRecord));
+	    newproprec->prop_len = 0; 	/* (unused) */
+	    newproprec->prop_type = PROPERTY_TYPE_PLANE;
+	    plane = DBNewPlane((ClientData)TT_SPACE);
+	    newproprec->prop_value.prop_plane = plane;
+	    DBPropPut(mhd->mh_def, name, newproprec);
+	}
+
+	mhd->mh_plane = plane;
+	DBSrPaintArea((Tile *)NULL, proprec->prop_value.prop_plane,
+			&TiPlaneRect, &CIFSolidBits,
+			cifCopyMaskHintFunc, (ClientData)mhd);
     }
     return 0;
 }
@@ -350,9 +312,10 @@ cifFlatMaskHints(
  * CIFCopyMaskHints --
  *
  *	Callback function to copy mask hints from one cell into another.
+ *	(Occasionally called as a standalone function, not as a callback.)
  * 
  * Results:
- *	None.
+ *	Return 0 to keep the search going.
  *
  * Side effects:
  *	May modify properties in the target cell.
@@ -360,7 +323,7 @@ cifFlatMaskHints(
  * ----------------------------------------------------------------------------
  */
 
-void
+int
 CIFCopyMaskHints(
     SearchContext *scx,
     CellDef *targetDef)
@@ -370,38 +333,9 @@ CIFCopyMaskHints(
     CellDef *sourceDef = scx->scx_use->cu_def;
     mhd.mh_trans = &scx->scx_trans;
     mhd.mh_def = targetDef;
+    mhd.mh_plane = (Plane *)NULL;
 
     DBPropEnum(sourceDef, cifFlatMaskHints, &mhd);
-}
-
-/*
- * ----------------------------------------------------------------------------
- *
- * cifHierCopyMaskHints --
- *
- *	Callback function to copy mask hints from a subcell into a flattened
- *	cell, which is passed in the clientData record.
- * 
- * Results:
- *	Always returns 0 to keep the search alive.
- *
- * Side effects:
- *	May modify properties in the flattened cell.
- *
- * ----------------------------------------------------------------------------
- */
-
-int
-cifHierCopyMaskHints(
-    SearchContext *scx,
-    ClientData clientData)
-{
-    MaskHintsData mhd;
-
-    mhd.mh_trans = &scx->scx_trans;
-    mhd.mh_def = (CellDef *)clientData;
-
-    DBPropEnum(scx->scx_use->cu_def, cifFlatMaskHints, &mhd);
     return 0;
 }
 
@@ -526,7 +460,7 @@ cifHierCellFunc(
 
     /* Flatten mask hints in the area of interest */
     CIFCopyMaskHints(scx, CIFComponentDef);
-    DBTreeSrCells(&newscx, 0, cifHierCopyMaskHints,
+    DBTreeSrCells(&newscx, 0, CIFCopyMaskHints,
 		(ClientData)CIFComponentDef);
 
     /* Set CIFErrorDef to NULL to ignore errors here... these will
@@ -801,8 +735,10 @@ CIFGenSubcells(
 
     /* This routine can take a long time, so use the display
      * timer to force a 5-second progress check (like is done
-     * with extract)
+     * with extract).  Save and restore GrDisplayStatus so that
+     * a headless (DISPLAY_SUSPEND) build isn't left in DISPLAY_IDLE.
      */
+    unsigned char savedDisplayStatus = GrDisplayStatus;
     GrDisplayStatus = DISPLAY_IN_PROGRESS;
     SigSetTimer(5);			/* Print at 5-second intervals */
     cuts = 0;
@@ -854,7 +790,7 @@ CIFGenSubcells(
 		cifHierCopyFunc, (ClientData) CIFTotalDef);
 	    /* Flatten mask hints in the area of interest */
     	    CIFCopyMaskHints(&scx, CIFTotalDef);
-	    DBTreeSrCells(&scx, 0, cifHierCopyMaskHints,
+	    DBTreeSrCells(&scx, 0, CIFCopyMaskHints,
                 	(ClientData)CIFTotalDef);
 
 	    CIFErrorDef = def;
@@ -927,7 +863,7 @@ CIFGenSubcells(
 
     CIFHierTileOps += CIFTileOps - oldTileOps;
 
-    GrDisplayStatus = DISPLAY_IDLE;
+    GrDisplayStatus = savedDisplayStatus;
     SigRemoveTimer();
 
     UndoEnable();
@@ -1032,14 +968,14 @@ cifHierElementFunc(
     (void) DBTreeSrTiles(&scx, &CIFCurStyle->cs_yankLayers, 0,
 	cifHierCopyFunc, (ClientData) CIFTotalDef);
     CIFCopyMaskHints(&scx, CIFTotalDef);
-    DBTreeSrCells(&scx, 0, cifHierCopyMaskHints,
+    DBTreeSrCells(&scx, 0, CIFCopyMaskHints,
                 (ClientData)CIFTotalDef);
 
     DBCellClearDef(CIFComponentDef);
     (void) DBTreeSrTiles(&scx, &CIFCurStyle->cs_yankLayers, 0,
 	cifHierCopyFunc, (ClientData) CIFComponentDef);
     CIFCopyMaskHints(&scx, CIFComponentDef);
-    DBTreeSrCells(&scx, 0, cifHierCopyMaskHints,
+    DBTreeSrCells(&scx, 0, CIFCopyMaskHints,
                 (ClientData)CIFComponentDef);
 
     CIFErrorDef = (CellDef *) NULL;

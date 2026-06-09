@@ -455,15 +455,18 @@ CmdTech(
 		}
 		if (!strncmp(cmd->tx_argv[2], "width", 5))
 		{
+		    char *techwidth;
 		    tresult = DRCGetDefaultLayerWidth(t1);
+		    techwidth = DBWPrintValue(tresult, w, TRUE);
 #ifdef MAGIC_WRAPPER
-		    Tcl_SetObjResult(magicinterp, Tcl_NewIntObj(tresult));
+		    Tcl_SetObjResult(magicinterp, Tcl_NewStringObj(techwidth, -1));
 #else
-		    TxPrintf("Minimum width is %d\n", tresult);
+		    TxPrintf("Minimum width is %s\n", techwidth);
 #endif
 		}
 		else if (!strncmp(cmd->tx_argv[2], "spac", 4))
 		{
+		    char *techspace;
 		    if (cmd->tx_argc >= 5)
 		    {
 			t2 = DBTechNoisyNameType(cmd->tx_argv[4]);
@@ -475,14 +478,16 @@ CmdTech(
 		    else
 			t2 = t1;
 		    tresult = DRCGetDefaultLayerSpacing(t1, t2);
+		    techspace = DBWPrintValue(tresult, w, TRUE);
 #ifdef MAGIC_WRAPPER
-		    Tcl_SetObjResult(magicinterp, Tcl_NewIntObj(tresult));
+		    Tcl_SetObjResult(magicinterp, Tcl_NewStringObj(techspace, -1));
 #else
-		    TxPrintf("Minimum spacing is %d\n", tresult);
+		    TxPrintf("Minimum spacing is %s\n", techspace);
 #endif
 		}
 		else if (!strncmp(cmd->tx_argv[2], "surr", 4))
 		{
+		    char *techsurround;
 		    if (cmd->tx_argc >= 5)
 		    {
 			t2 = DBTechNoisyNameType(cmd->tx_argv[4]);
@@ -498,14 +503,17 @@ CmdTech(
 		    }
 
 		    tresult = DRCGetDefaultLayerSurround(t1, t2);
+		    techsurround = DBWPrintValue(tresult, w, TRUE);
 #ifdef MAGIC_WRAPPER
-		    Tcl_SetObjResult(magicinterp, Tcl_NewIntObj(tresult));
+		    Tcl_SetObjResult(magicinterp, Tcl_NewStringObj(techsurround, -1));
 #else
-		    TxPrintf("Minimum surround is %d\n", tresult);
+		    TxPrintf("Minimum surround is %s\n", techsurround);
 #endif
 		}
 		else if (!strncmp(cmd->tx_argv[2], "direc", 5))
 		{
+		    char *techdirec;
+
 		    if (cmd->tx_argc >= 5)
 		    {
 			t2 = DBTechNoisyNameType(cmd->tx_argv[4]);
@@ -521,10 +529,11 @@ CmdTech(
 		    }
 
 		    tresult = DRCGetDirectionalLayerSurround(t1, t2);
+		    techdirec = DBWPrintValue(tresult, w, TRUE);
 #ifdef MAGIC_WRAPPER
-		    Tcl_SetObjResult(magicinterp, Tcl_NewIntObj(tresult));
+		    Tcl_SetObjResult(magicinterp, Tcl_NewStringObj(techdirec, -1));
 #else
-		    TxPrintf("Minimum surround (in one orientation) is %d\n", tresult);
+		    TxPrintf("Minimum surround (in one orientation) is %s\n", techdirec);
 #endif
 		}
 	    }
@@ -693,32 +702,62 @@ CmdTool(
  * Implement the "unexpand" command.
  *
  * Usage:
- *	unexpand
+ *	unexpand [selection|surround|overlap|all]
+ *
+ *	"selection" unexpands (hides) cells in the selection.  All
+ *	other options unexpand cells in the layout.  "all" unexpands
+ *	all cells in the layout.  "surround" unexpannds cells which
+ *	the cursor box surrounds completely, and "overlap" unexpands
+ *	cells which the cursor box overlaps.
+ *
+ *	For backwards compatibility:
+ *	"unexpand" alone implements "unexpand surround".
+ *
+ *	Also see:  CmdExpand
  *
  * Results:
  *	None.
  *
  * Side effects:
- *	Unexpands all cells under the box that don't completely
- *	contain the box.
+ *	Changes the expansion state of cells.
  *
  * ----------------------------------------------------------------------------
  */
+
+#define UNEXPAND_SELECTION	0
+#define UNEXPAND_SURROUND	1
+#define UNEXPAND_OVERLAP	2
+#define UNEXPAND_ALL		3
+#define UNEXPAND_HELP		4
 
 void
 CmdUnexpand(
     MagWindow *w,
     TxCommand *cmd)
 {
-    int windowMask, boxMask;
+    int windowMask, boxMask, option;
+    const char * const *msg;
     Rect rootRect;
+
     int cmdUnexpandFunc(CellUse *use, int windowMask);		/* Forward reference. */
 
-    if (cmd->tx_argc != 1)
+    static const char * const cmdUnexpandOption[] = {
+	"selection	expand cell instances in the selection",
+	"surround	expand cell instances which the cursor box surrounds",
+	"overlap	expand cell instances which the cursor box overlaps",
+	"all		expand all cell instances",
+	NULL
+    };
+
+    if (cmd->tx_argc > 1)
     {
-	TxError("Usage: %s\n", cmd->tx_argv[0]);
-	return;
+	option = Lookup(cmd->tx_argv[1], cmdUnexpandOption);
+	if (option < 0) option = UNEXPAND_HELP;
     }
+    else
+	option = UNEXPAND_SURROUND;
+
+    if (option == UNEXPAND_HELP) goto badusage; 
 
     windCheckOnlyWindow(&w, DBWclientID);
     if (w == (MagWindow *) NULL)
@@ -734,8 +773,42 @@ CmdUnexpand(
 	TxError("The box isn't in the same window as the cursor.\n");
 	return;
     }
-    DBExpandAll(((CellUse *) w->w_surfaceID), &rootRect, windowMask,
-	    FALSE, cmdUnexpandFunc, (ClientData)(pointertype) windowMask);
+
+    switch (option)
+    {
+	case UNEXPAND_SELECTION:
+	    SelectExpand(windowMask, DB_UNEXPAND, (Rect *)NULL);
+	    break;
+	case UNEXPAND_OVERLAP:
+	    DBExpandAll(((CellUse *)w->w_surfaceID), &rootRect, windowMask,
+			DB_UNEXPAND | DB_EXPAND_OVERLAP,
+			cmdUnexpandFunc, (ClientData)(pointertype)windowMask);
+	    SelectExpand(windowMask,
+			DB_UNEXPAND | DB_EXPAND_OVERLAP,
+			&rootRect);
+	    break;
+	case UNEXPAND_SURROUND:
+	    DBExpandAll(((CellUse *)w->w_surfaceID), &rootRect, windowMask,
+			DB_UNEXPAND | DB_EXPAND_SURROUND,
+			cmdUnexpandFunc, (ClientData)(pointertype)windowMask);
+	    SelectExpand(windowMask,
+			DB_UNEXPAND | DB_EXPAND_SURROUND,
+			&rootRect);
+	    break;
+	case UNEXPAND_ALL:
+	    DBExpandAll(((CellUse *)w->w_surfaceID), &TiPlaneRect, windowMask,
+			DB_UNEXPAND | DB_EXPAND_OVERLAP,
+			cmdUnexpandFunc, (ClientData)(pointertype)windowMask);
+	    SelectExpand(windowMask,
+			DB_UNEXPAND | DB_EXPAND_OVERLAP,
+			(Rect *)NULL);
+	    break;
+    }
+    return;
+
+badusage:
+    for (msg = &(cmdUnexpandOption[0]); *msg != NULL; msg++)
+        TxPrintf("    %s\n", *msg);
 }
 
 /* This function is called for each cell whose expansion status changed.
@@ -752,6 +825,182 @@ cmdUnexpandFunc(
     DBWAreaChanged(use->cu_parent, &use->cu_bbox, windowMask,
 	    (TileTypeBitMask *) NULL);
     return 0;
+}
+
+/*
+ * ----------------------------------------------------------------------------
+ *
+ * CmdUnits --
+ *
+ * Implement the "units" command.
+ *
+ * Usage:
+ *	units [value] [print|noprint]
+ *
+ *	where "value" may be one of "default", "internal", "lambda",
+ *	"user" (equivalently "grid"), or "microns".
+ *
+ * Results:
+ *	None.
+ *
+ * Side effects:
+ *	The global variable DBWUnits may be changed, which changes the
+ *	behavior of magic when interpreting un-suffixed values or
+ *	displaying values.
+ *
+ * Notes:
+ *	The units behavior was previously dependent on what command was
+ *	issued, with results usually being given in internal units, and
+ *	with un-suffixed values following the snap behavior.  Backwards-
+ *	compatible behavior is used on startup or at any time by setting
+ *	the units to "default".  Otherwise, unit display follows the
+ *	given "units" setting.
+ *	
+ * ----------------------------------------------------------------------------
+ */
+
+#define UNITS_DEFAULT	0
+#define UNITS_INTERNAL	1
+#define UNITS_LAMBDA	2
+#define UNITS_GRID	3
+#define UNITS_USER	4
+#define UNITS_MICRONS	5
+#define UNITS_LIST	6
+#define UNITS_PRINT	7
+#define UNITS_NOPRINT	8
+
+void
+CmdUnits(
+    MagWindow *w,
+    TxCommand *cmd)
+{
+    static const char * const names[] = { "default", "internal", "lambda",
+		"grid", "user", "microns", "list", "print", "noprint", 0 };
+    int idx, n = UNITS_LIST, n2, saveflag;
+    DBWclientRec *crec;
+
+    if (cmd->tx_argc >= 2)
+    {
+	n = Lookup(cmd->tx_argv[1], names);
+	if (n < 0)
+	{
+	    TxPrintf("Usage: units [default | internal | lambda | microns"
+			" | user] [print]\n");
+	    return;
+	}
+	if (DBWUnits != DBW_UNITS_DEFAULT)
+	    saveflag = DBWUnits & DBW_UNITS_PRINT_FLAG;
+	else
+	    saveflag = -1;
+
+	switch (n)
+	{
+	    case UNITS_DEFAULT:
+		DBWUnits = DBW_UNITS_DEFAULT;
+		break;
+	    case UNITS_INTERNAL:
+		DBWUnits = DBW_UNITS_INTERNAL;
+		break;
+	    case UNITS_LAMBDA:
+		DBWUnits = DBW_UNITS_LAMBDA;
+		break;
+	    case UNITS_USER:
+	    case UNITS_GRID:
+		DBWUnits = DBW_UNITS_USER;
+		break;
+	    case UNITS_MICRONS:
+		DBWUnits = DBW_UNITS_MICRONS;
+		break;
+	    case UNITS_PRINT:
+		saveflag = DBW_UNITS_PRINT_FLAG;
+		break;
+	    case UNITS_NOPRINT:
+		saveflag = 0;
+		break;
+	}
+	if (n < 0)
+	{
+	    TxError("Unrecognized units option %s\n.", cmd->tx_argv[1]);
+	    return;
+	}
+	if (n != UNITS_LIST)
+	{
+	    if ((cmd->tx_argc == 3) && (n != UNITS_DEFAULT))
+	    {
+		n2 = Lookup(cmd->tx_argv[2], names);
+		switch (n2)
+		{
+		    case UNITS_PRINT:
+			DBWUnits |= DBW_UNITS_PRINT_FLAG; 
+			break;
+		    case UNITS_NOPRINT:
+			DBWUnits &= DBW_UNITS_TYPE_MASK; 
+			break;
+		    default:
+			TxError("Unrecognized units option %s\n.", cmd->tx_argv[2]);
+			break;
+		}
+	    }
+	    else if ((n != UNITS_DEFAULT) && (saveflag != -1))
+	    {
+		/* Preserve the previous value of the print/noprint flag */
+		DBWUnits &= DBW_UNITS_TYPE_MASK;
+		DBWUnits |= saveflag;
+	    }
+	    return;
+	}
+    }
+
+    if (DBWUnits == DBW_UNITS_DEFAULT)
+	idx = UNITS_DEFAULT;
+    else
+	switch (DBWUnits & DBW_UNITS_TYPE_MASK)
+	{
+	    case DBW_UNITS_INTERNAL:
+		idx = UNITS_INTERNAL;
+		break;
+	    case DBW_UNITS_LAMBDA:
+		idx = UNITS_LAMBDA;
+		break;
+	    case DBW_UNITS_USER:
+		idx = UNITS_USER;
+		break;
+	    case DBW_UNITS_MICRONS:
+		idx = UNITS_MICRONS;
+		break;
+	}
+
+    if (n == UNITS_LIST)		/* list */
+    {
+#ifdef MAGIC_WRAPPER
+	Tcl_Obj *tobj;
+	tobj = Tcl_NewListObj(0, NULL);
+	Tcl_ListObjAppendElement(magicinterp, tobj,
+		Tcl_NewStringObj((char *)names[idx], -1));
+	if (idx != UNITS_DEFAULT)
+	{
+	    if (DBWUnits & DBW_UNITS_PRINT_FLAG)
+		Tcl_ListObjAppendElement(magicinterp, tobj,
+			Tcl_NewStringObj("print", 5));
+	    else
+		Tcl_ListObjAppendElement(magicinterp, tobj,
+			Tcl_NewStringObj("noprint", 7));
+	}
+	Tcl_SetObjResult(magicinterp, tobj);
+#else
+	TxPrintf("%s", names[idx]);
+	if (idx != UNITS_DEFAULT)
+	    if (DBWUnits & DBW_UNITS_PRINT_FLAG)
+		TxPrintf(" print");
+	TxPrintf("\n");
+#endif
+    }
+    else if (idx == UNITS_DEFAULT)
+	TxPrintf("Reported units follow the snap setting.\n");
+    else if (DBWUnits & DBW_UNITS_PRINT_FLAG)
+	TxPrintf("Values are reported as %s, along with the units.\n", names[idx]);
+    else
+	TxPrintf("Values are reported as %s\n", names[idx]);
 }
 
 /*
@@ -1696,18 +1945,20 @@ CmdWire(
 	case VALUES:
 	    if (locargc == 2)
 	    {
+		char *wdisp;
 		width = WireGetWidth();
 		type = WireGetType();
+		wdisp = DBWPrintValue(width, w, TRUE);
 #ifdef MAGIC_WRAPPER
 		lobj = Tcl_NewListObj(0, NULL);
 		Tcl_ListObjAppendElement(magicinterp, lobj,
-				Tcl_NewIntObj(width));
-		Tcl_ListObjAppendElement(magicinterp, lobj,
 				Tcl_NewStringObj(DBTypeLongNameTbl[type], -1));
+		Tcl_ListObjAppendElement(magicinterp, lobj,
+				Tcl_NewStringObj(wdisp, -1));
 		Tcl_SetObjResult(magicinterp, lobj);
 #else
-		TxPrintf("Wire layer %s, width %d\n",
-			DBTypeLongNameTbl[type], width);
+		TxPrintf("Wire layer %s, width %s\n",
+			DBTypeLongNameTbl[type], wdisp);
 #endif
 	    }
 	    break;
@@ -1732,12 +1983,14 @@ CmdWire(
 	case WIDTH:
 	    if (locargc == 2)
 	    {
+		char *wdisp;
 		width = WireGetWidth();
+		wdisp = DBWPrintValue(width, w, TRUE);
 #ifdef MAGIC_WRAPPER
-		lobj = Tcl_NewIntObj(width);
+		lobj = Tcl_NewStringObj(wdisp, -1);
 		Tcl_SetObjResult(magicinterp, lobj);
 #else
-		TxPrintf("Wire width is %d\n", width);
+		TxPrintf("Wire width is %s\n", wdisp);
 #endif
 	    }
 	    else if (locargc != 3)

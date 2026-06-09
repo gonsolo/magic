@@ -45,9 +45,8 @@ static const char rcsid[] __attribute__ ((unused)) = "$Header: /usr/cvsroot/magi
 #include "utils/undo.h"
 #include "select/select.h"
 #include "netmenu/netmenu.h"
-
-/* C99 compat */
 #include "cif/cif.h"
+#include "cif/CIFint.h"
 
 /* Forward declarations */
 
@@ -518,14 +517,14 @@ CmdLoad(
 
 	    DBExpandAll(topuse, &(topuse->cu_bbox),
 			((DBWclientRec *)w->w_clientData)->dbw_bitmask,
-			TRUE, keepGoing, NULL);
+			DB_EXPAND, keepGoing, NULL);
 
 	    DBExpandAll(topuse, &(topuse->cu_bbox),
 			((DBWclientRec *)w->w_clientData)->dbw_bitmask,
-			FALSE, keepGoing, NULL);
+			DB_UNEXPAND, keepGoing, NULL);
 	    DBExpand(topuse,
 			((DBWclientRec *)w->w_clientData)->dbw_bitmask,
-			TRUE);
+			DB_EXPAND);
 
 	    /* We don't want to save and restore DBLambda, because      */
 	    /* loading the file may change their values.  Instead, we   */
@@ -2296,6 +2295,8 @@ parsepositions:
     editDef->cd_flags |= (CDMODIFIED | CDGETNEWSTAMP);
 }
 
+#define PROPERTY_TYPE_COMPAT	4	/* Last entry in cmdPropertyType */
+
 /*
  * ----------------------------------------------------------------------------
  *
@@ -2319,47 +2320,448 @@ parsepositions:
 void
 CmdDoProperty(
     CellDef *def,
+    MagWindow *w,
     TxCommand *cmd,
     int argstart)
 {
-    int printPropertiesFunc();
+    PropertyRecord *proprec = NULL;
     char *value;
-    bool propfound;
+    bool propfound, dolist;
+    int proptype, proplen, propvalue, i;
+    dlong dvalue;
     int locargc = cmd->tx_argc - argstart + 1;
+#ifdef MAGIC_WRAPPER
+    Tcl_Obj *tobj;
+#endif
+
+    /* Forward declarations */
+    int printPropertiesFunc();
+    int printPlanePropFunc();		
+
+    /* These should match the property codes in database.h.in, except
+     * for "compat" which must come at the end.
+     */
+    static const char * const cmdPropertyType[] = {
+	"string", "integer", "dimension", "double", "plane", "compat", NULL
+    };
+
+    /* If the first keyword is "list", then set dolist and increment
+     * the starting argument position.
+     */
+    dolist = FALSE;
+    if (locargc > 1)
+    {
+	if (!strcmp(cmd->tx_argv[argstart], "list"))
+	{
+	    dolist = TRUE;
+	    locargc--;
+	    argstart++;
+	}
+    }
+
+    /* If a property type is given, parse it and then strip it from
+     * the arguments list.
+     */
+    if (locargc > 1)
+    {
+	proptype = Lookup(cmd->tx_argv[argstart], cmdPropertyType);
+	if (proptype >= 0)
+	{
+	    if (proptype != PROPERTY_TYPE_COMPAT)
+	    {
+		locargc--;
+		argstart++;
+	    }
+	}
+	else
+	    proptype = PROPERTY_TYPE_STRING;	/* default */
+    }
+    else
+	proptype = PROPERTY_TYPE_STRING;	/* default */
 
     if (locargc == 1)
     {
+#ifdef MAGIC_WRAPPER
+	Tcl_Obj *tobj;
+	/* Create an empty list for the interpreter result; the
+	 * printPropertiesFunc() function will append values to it.
+	 */
+	tobj = Tcl_NewListObj(0, NULL);
+	Tcl_SetObjResult(magicinterp, tobj);
+#endif
 	/* print all properties and their values */
-	DBPropEnum(def, printPropertiesFunc, NULL);
+	DBPropEnum(def, printPropertiesFunc, (ClientData)w);
     }
 
     else if (locargc == 2)
     {
-	/* print the value of the indicated property */
-	value = (char *)DBPropGet(def, cmd->tx_argv[argstart], &propfound);
-	if (propfound)
+	/* If the property type was "compat", then give the state of the
+	 * compatibility flag and return.
+	 */
+	if (proptype == PROPERTY_TYPE_COMPAT)
+	{
 #ifdef MAGIC_WRAPPER
-	    Tcl_SetResult(magicinterp, value, NULL);
+	    Tcl_SetObjResult(magicinterp, Tcl_NewBooleanObj(DBPropCompat));
 #else
-	    TxPrintf("%s", value);
+	    TxPrintf("%s\n", (DBPropCompat == TRUE) ? "True" : "False");
 #endif
+	    return;
+	}
+
+	/* Print the value of the indicated property */
+	proprec = (PropertyRecord *)DBPropGet(def, cmd->tx_argv[argstart], &propfound);
+	if (propfound)
+	{
+	    proptype = proprec->prop_type;
+#ifdef MAGIC_WRAPPER
+	    switch (proptype)
+	    {
+		case PROPERTY_TYPE_STRING:
+		    Tcl_SetResult(magicinterp, proprec->prop_value.prop_string, NULL);
+		    break;
+		case PROPERTY_TYPE_INTEGER:
+		    if (proprec->prop_len == 1)
+			Tcl_SetObjResult(magicinterp,
+				Tcl_NewIntObj(proprec->prop_value.prop_integer[0]));
+		    else
+		    {
+			tobj = Tcl_NewListObj(0, NULL);
+			for (i = 0; i < proprec->prop_len; i++)
+			    Tcl_ListObjAppendElement(magicinterp, tobj,
+					Tcl_NewIntObj(
+					proprec->prop_value.prop_integer[i]));
+			Tcl_SetObjResult(magicinterp, tobj);
+		    }
+		    break;
+		case PROPERTY_TYPE_DIMENSION:
+		    if (proprec->prop_len == 1)
+			Tcl_SetResult(magicinterp,
+				DBWPrintValue(proprec->prop_value.prop_integer[0],
+				w, TRUE), NULL);
+		    else
+		    {
+			tobj = Tcl_NewListObj(0, NULL);
+			for (i = 0; i < proprec->prop_len; i++)
+			    Tcl_ListObjAppendElement(magicinterp, tobj,
+					Tcl_NewStringObj(DBWPrintValue(
+					proprec->prop_value.prop_integer[i], w,
+					((i % 2) == 0) ? TRUE : FALSE), -1));
+			Tcl_SetObjResult(magicinterp, tobj);
+		    }
+		    break;
+		case PROPERTY_TYPE_PLANE:
+		    tobj = Tcl_NewListObj(0, NULL);
+		    DBSrPaintArea(PlaneGetHint(proprec->prop_value.prop_plane),
+				proprec->prop_value.prop_plane,
+				&TiPlaneRect, &CIFSolidBits, printPlanePropFunc,
+				(ClientData)tobj);
+		    Tcl_SetObjResult(magicinterp, tobj);
+		    break;
+		case PROPERTY_TYPE_DOUBLE:
+		    if (proprec->prop_len == 1)
+			Tcl_SetObjResult(magicinterp,
+				Tcl_NewWideIntObj((Tcl_WideInt)
+				proprec->prop_value.prop_double[0]));
+		    else
+		    {
+			tobj = Tcl_NewListObj(0, NULL);
+			for (i = 0; i < proprec->prop_len; i++)
+			    Tcl_ListObjAppendElement(magicinterp, tobj,
+					Tcl_NewWideIntObj((Tcl_WideInt)
+					proprec->prop_value.prop_double[i]));
+			Tcl_SetObjResult(magicinterp, tobj);
+		    }
+		    break;
+	    }
+#else
+	    switch (proptype)
+	    {
+		case PROPERTY_TYPE_STRING:
+		    TxPrintf("%s\n", proprec->prop_value.prop_string);
+		    break;
+		case PROPERTY_TYPE_INTEGER:
+		    for (i = 0; i < proprec->prop_len; i++)
+			TxPrintf("%d ", proprec->prop_value.prop_integer[i]);
+		    TxPrintf("\n");
+		    break;
+		case PROPERTY_TYPE_DIMENSION:
+		    for (i = 0; i < proprec->prop_len; i++)
+			TxPrintf("%s ", DBWPrintValue(
+				proprec->prop_value.prop_integer[i], w,
+				((i % 2) == 0) ? TRUE : FALSE));
+		
+		    TxPrintf("\n");
+		    break;
+		case PROPERTY_TYPE_PLANE:
+		    DBSrPaintArea(PlaneGetHint(proprec->prop_value.prop_plane),
+				proprec->prop_value.prop_plane,
+				&TiPlaneRect, &CIFSolidBits, printPlanePropFunc,
+				(ClientData)NULL);
+		    TxPrintf("\n");
+		    break;
+		case PROPERTY_TYPE_DOUBLE:
+		    for (i = 0; i < proprec->prop_len; i++)
+			TxPrintf( "%"DLONG_PREFIX"d",
+				proprec->prop_value.prop_double[i]);
+		    TxPrintf("\n");
+		    break;
+	    }
+#endif
+	}
 	else {
 #ifdef MAGIC_WRAPPER
 	    /* If the command was "cellname list property ...", then	*/
 	    /* just return NULL if the property was not found.		*/
-	    if (strcmp(cmd->tx_argv[1], "list"))
+	    if (!dolist)
 #endif
-		TxError("Property name \"%s\" is not defined\n", cmd->tx_argv[1]);
+		TxError("Property name \"%s\" is not defined\n", cmd->tx_argv[argstart]);
 	}
     }
-    else if (locargc == 3)
+    else if (locargc >= 3)
     {
+	/* If the property type was "compat", then set the state of the
+	 * compatibility flag and return.
+	 */
+	if (proptype == PROPERTY_TYPE_COMPAT)
+	{
+	    int idx;
+	    static const char * const cmdPropYesNo[] = {
+			"disable", "no", "false", "off", "0",
+			"enable", "yes", "true", "on", "1", 0 };
+	    idx = Lookup(cmd->tx_argv[2], cmdPropYesNo);
+	    if (idx < 0)
+	    {
+		TxError("Unknown property compat option \"%s\"\n", cmd->tx_argv[2]);
+		return;
+	    }
+	    DBPropCompat = (idx <= 4) ? FALSE : TRUE;
+	    return;
+	}
+
+	/* Catch the following known reserved keywords and cast them to the
+	 * expected property type.  If any property type was already given
+	 * to the command, it is overridden.  This ensures that the reserved
+	 * keyword functions work correctly.
+	 *
+	 * GDS_START, GDS_END:  PROPERTY_TYPE_DOUBLE
+	 * MASKHINTS_*:  PROPERTY_TYPE_PLANE
+	 * FIXED_BBOX:  PROPERTY_TYPE_DIMENSION
+	 */
+	if (!strcmp(cmd->tx_argv[argstart], "GDS_START"))
+	    proptype = PROPERTY_TYPE_DOUBLE;
+	else if (!strcmp(cmd->tx_argv[argstart], "GDS_END"))
+	    proptype = PROPERTY_TYPE_DOUBLE;
+	else if (!strcmp(cmd->tx_argv[argstart], "GDS_FILE"))
+	    proptype = PROPERTY_TYPE_STRING;
+	else if (!strcmp(cmd->tx_argv[argstart], "FIXED_BBOX"))
+	    proptype = PROPERTY_TYPE_DIMENSION;
+	else if (!strcmp(cmd->tx_argv[argstart], "OBS_BBOX"))
+	    proptype = PROPERTY_TYPE_DIMENSION;
+	else if (!strncmp(cmd->tx_argv[argstart], "MASKHINTS_", 10))
+	    proptype = PROPERTY_TYPE_PLANE;
+
 	if (strlen(cmd->tx_argv[argstart + 1]) == 0)
 	    DBPropPut(def, cmd->tx_argv[argstart], NULL);
 	else
 	{
-	    value = StrDup((char **)NULL, cmd->tx_argv[argstart + 1]);
-	    DBPropPut(def, cmd->tx_argv[argstart], value);
+	    if (proptype == PROPERTY_TYPE_STRING)
+	    {
+		proplen = strlen(cmd->tx_argv[argstart + 1]);
+		proprec = (PropertyRecord *)mallocMagic(sizeof(PropertyRecord) -
+			7 + proplen);
+		proprec->prop_type = proptype;
+		proprec->prop_len = proplen;
+		strcpy(proprec->prop_value.prop_string, cmd->tx_argv[argstart + 1]);
+	    }
+	    else	/* All non-string properties */
+	    {
+		Plane *plane;
+		Rect r;
+
+		/* Two choices:  If locargc == 3 then all values are in one
+		 * argument.  If locargc > 3, then parse each argument as a
+		 * separate value.
+		 */
+		if (locargc > 3)
+		{
+		    proplen = locargc - 2;
+		    if (proptype == PROPERTY_TYPE_DOUBLE)
+		        proprec = (PropertyRecord *)mallocMagic(sizeof(PropertyRecord) +
+				(proplen - 1)*sizeof(dlong));
+		    else if (proptype == PROPERTY_TYPE_PLANE)
+		    {
+		        proprec = (PropertyRecord *)mallocMagic(sizeof(PropertyRecord));
+			plane = DBNewPlane((ClientData)TT_SPACE);
+			proprec->prop_value.prop_plane = plane;
+		    }
+		    else
+		        proprec = (PropertyRecord *)mallocMagic(sizeof(PropertyRecord) +
+				(proplen - 2)*sizeof(int));
+		    proprec->prop_type = proptype;
+		    proprec->prop_len = proplen;
+
+		    for (i = 1; i < locargc - 1; i++)
+		    {
+			if (proptype == PROPERTY_TYPE_INTEGER)
+			{
+			    if (sscanf(cmd->tx_argv[argstart + i], "%d",
+					&propvalue) == 1)
+				proprec->prop_value.prop_integer[i - 1] = propvalue;
+			    else
+			    {
+				TxError("Unable to parse value \"%s\" as an integer\n",
+					cmd->tx_argv[argstart + i]);
+				proprec->prop_value.prop_integer[i - 1] = 0;
+			    }
+			}
+			else if (proptype == PROPERTY_TYPE_DOUBLE)
+			{
+			    if (sscanf(cmd->tx_argv[argstart + i], "%"DLONG_PREFIX"d",
+					&dvalue) == 1)
+				proprec->prop_value.prop_double[i - 1] = dvalue;
+			    else
+			    {
+				TxError("Unable to parse value \"%s\" as an integer\n",
+					cmd->tx_argv[argstart + i]);
+				proprec->prop_value.prop_double[i - 1] = 0;
+			    }
+			}
+			else if (proptype == PROPERTY_TYPE_PLANE)
+			{
+			    propvalue = cmdParseCoord(w, cmd->tx_argv[argstart + i],
+					FALSE, ((i % 2) == 0) ? FALSE : TRUE);
+			    switch ((i - 1) % 4)
+			    {
+				case 0:
+				    r.r_xbot = propvalue;
+				    break;
+				case 1:
+				    r.r_ybot = propvalue;
+				    break;
+				case 2:
+				    r.r_xtop = propvalue;
+				    break;
+				case 3:
+				    r.r_ytop = propvalue;
+				    DBPaintPlane(plane, &r, CIFPaintTable,
+						(PaintUndoInfo *)NULL);
+				    break;
+			    }
+			}
+			else	/* PROPERTY_TYPE_DIMENSION */
+			{
+			    propvalue = cmdParseCoord(w, cmd->tx_argv[argstart + i],
+					FALSE, ((i % 2) == 0) ? FALSE : TRUE);
+			    proprec->prop_value.prop_integer[i - 1] = propvalue;
+			}
+	 	    }
+		}
+		else
+		{
+		    /* Make two passes through the argument string, once to get
+		     * the valid number of arguments, then again to parse the
+		     * values, once the property record has been allocated
+		     */
+		    value = cmd->tx_argv[argstart + 1];
+		    for (proplen = 0; *value != '\0'; )
+		    {
+			if (isspace(*value) && (*value != '\0')) value++;
+			if (!isspace(*value))
+			{
+			    proplen++;
+			    while (!isspace(*value) && (*value != '\0')) value++;
+			}
+		    }
+		    if (proplen > 0)
+		    {
+			if (proptype == PROPERTY_TYPE_PLANE)
+			{
+			    proprec = (PropertyRecord *)mallocMagic(sizeof(PropertyRecord));
+			    plane = DBNewPlane((ClientData)TT_SPACE);
+			    proprec->prop_value.prop_plane = plane;
+			} else {
+			    proprec = (PropertyRecord *)mallocMagic(
+					sizeof(PropertyRecord) +
+					(proplen - 2) * sizeof(int));
+			}
+			proprec->prop_type = proptype;
+			proprec->prop_len = proplen;
+		    }
+
+		    /* Second pass */
+		    value = cmd->tx_argv[argstart + 1];
+		    for (proplen = 0; proplen < proprec->prop_len; proplen++)
+		    {
+			if (isspace(*value) && (*value != '\0')) value++;
+			if (!isspace(*value))
+			{
+			    char *spptr, spchar;
+			    /* cmdParseCoord() can only handle one value at a
+			     * time, so look ahead and null out the next space
+			     * character if there is one.
+			     */
+			    spptr = value + 1;
+			    while (!isspace(*spptr) && (*spptr != '\0')) spptr++;
+			    spchar = *spptr;
+			    *spptr = '\0';
+			
+			    if (proptype == PROPERTY_TYPE_INTEGER)
+			    {
+			        if (sscanf(value, "%d", &propvalue) != 1)
+				{
+				    TxError("Unable to parse integer "
+						"value from \"%s\"\n",
+						value);
+				    propvalue = 0;
+				}
+			        proprec->prop_value.prop_integer[proplen] = propvalue;
+			    }
+			    else if (proptype == PROPERTY_TYPE_DOUBLE)
+			    {
+			        if (sscanf(value, "%"DLONG_PREFIX"d", &dvalue) != 1)
+				{
+				    TxError("Unable to parse integer "
+						"value from \"%s\"\n",
+						value);
+				    propvalue = 0;
+				}
+			        proprec->prop_value.prop_double[proplen] = dvalue;
+			    }
+			    else if (proptype == PROPERTY_TYPE_PLANE)
+			    {
+				propvalue = cmdParseCoord(w, value, FALSE,
+					((proplen % 2) == 0) ? TRUE : FALSE);
+				switch (proplen % 4)
+				{
+				    case 0:
+					r.r_xbot = propvalue;
+					break;
+				    case 1:
+					r.r_ybot = propvalue;
+					break;
+				    case 2:
+					r.r_xtop = propvalue;
+					break;
+				    case 3:
+					r.r_ytop = propvalue;
+					DBPaintPlane(plane, &r, CIFPaintTable,
+						(PaintUndoInfo *)NULL);
+					break;
+				}
+			    }
+			    else	/* PROPERTY_TYPE_DIMENSION */
+			    {
+				propvalue = cmdParseCoord(w, value, FALSE,
+					((proplen % 2) == 0) ? TRUE : FALSE);
+			        proprec->prop_value.prop_integer[proplen] = propvalue;
+			    }
+			    *spptr = spchar;
+			    while (!isspace(*value) && (*value != '\0')) value++;
+			}
+		    }
+		}
+	    }
+	    DBPropPut(def, cmd->tx_argv[argstart], proprec);
 	}
 	def->cd_flags |= (CDMODIFIED | CDGETNEWSTAMP);
     }
@@ -2380,10 +2782,14 @@ CmdDoProperty(
  * defined in database/DBprop.c.
  *
  * Usage:
- *	property [name] [value]
+ *	property [string|integer|dimension] [name] [value]
  *
- * "name" is a unique string tag for the property, and "value" is its
- * string value.
+ * If the first argument is present, it must be one of the known
+ * keywords, and determines the form in which "value" is interpreted and
+ * stored.  "name" is a unique string tag for the property.  "value" is
+ * the value of the property, which is either a string, integer, or a
+ * list of integers.  The difference between an "integer" and a "dimension"
+ * is that all values which are dimensions are scaled with internal units.
  *
  * Results:
  *	None.
@@ -2410,8 +2816,61 @@ CmdProperty(
     else
 	def = ((CellUse *) w->w_surfaceID)->cu_def;
 
-    CmdDoProperty(def, cmd, 1);
+    CmdDoProperty(def, w, cmd, 1);
 }
+
+/*
+ * ----------------------------------------------------------------------------
+ * Callback function for printing values from a Plane property
+ * ----------------------------------------------------------------------------
+ */
+
+#ifdef MAGIC_WRAPPER 
+int
+printPlanePropFunc(
+    Tile *tile,
+    TileType dinfo,
+    Tcl_Obj *lobj)
+{
+    Rect r;
+    MagWindow *w;
+
+    TiToRect(tile, &r);
+    windCheckOnlyWindow(&w, DBWclientID); 
+
+    Tcl_ListObjAppendElement(magicinterp, lobj,
+		Tcl_NewStringObj(DBWPrintValue(r.r_xbot, w, TRUE), -1));
+    Tcl_ListObjAppendElement(magicinterp, lobj,
+		Tcl_NewStringObj(DBWPrintValue(r.r_ybot, w, FALSE), -1));
+    Tcl_ListObjAppendElement(magicinterp, lobj,
+		Tcl_NewStringObj(DBWPrintValue(r.r_xtop, w, TRUE), -1));
+    Tcl_ListObjAppendElement(magicinterp, lobj,
+		Tcl_NewStringObj(DBWPrintValue(r.r_ytop, w, FALSE), -1));
+    return 0;
+}
+
+#else
+
+int
+printPlanePropFunc(
+    Tile *tile,
+    TileType dinfo,
+    ClientData cdata)	/* (unused) */
+{
+    Rect r;
+    MagWindow *w;
+
+    TiToRect(tile, &r);
+    windCheckOnlyWindow(&w, DBWclientID); 
+
+    TxPrintf("%s ", DBWPrintValue(r.r_xbot, w, TRUE));
+    TxPrintf("%s ", DBWPrintValue(r.r_ybot, w, FALSE));
+    TxPrintf("%s ", DBWPrintValue(r.r_xtop, w, TRUE));
+    TxPrintf("%s ", DBWPrintValue(r.r_ytop, w, FALSE));
+    return 0;
+}
+
+#endif
 
 /*
  * ----------------------------------------------------------------------------
@@ -2422,27 +2881,84 @@ CmdProperty(
 int
 printPropertiesFunc(
     const char *name,
-    ClientData value,
-    ClientData cdata) /* not used */
+    PropertyRecord *proprec,
+    MagWindow *w)
 {
-#ifdef MAGIC_WRAPPER
-    char *keyvalue;
+    int i;
 
-    if (value == NULL)
+#ifdef MAGIC_WRAPPER
+    Tcl_Obj *tobj, *lobj;
+
+    tobj = Tcl_GetObjResult(magicinterp);
+    lobj = Tcl_NewListObj(0, NULL);
+    Tcl_ListObjAppendElement(magicinterp, lobj, Tcl_NewStringObj(name, -1));
+
+    switch (proprec->prop_type)
     {
-	keyvalue = (char *)mallocMagic(strlen(name) + 4);
-	sprintf(keyvalue, "%s {}", name);
+	case PROPERTY_TYPE_STRING:
+    	    Tcl_ListObjAppendElement(magicinterp, lobj,
+			Tcl_NewStringObj(proprec->prop_value.prop_string, -1));
+	    break;
+	case PROPERTY_TYPE_INTEGER:
+	    for (i = 0; i < proprec->prop_len; i++)
+    	        Tcl_ListObjAppendElement(magicinterp, lobj,
+			Tcl_NewIntObj(proprec->prop_value.prop_integer[i]));
+	    break;
+	case PROPERTY_TYPE_DIMENSION:
+	    for (i = 0; i < proprec->prop_len; i++)
+    	        Tcl_ListObjAppendElement(magicinterp, lobj,
+			Tcl_NewStringObj(
+			DBWPrintValue(proprec->prop_value.prop_integer[i],
+			w, ((i % 2) == 0) ? TRUE : FALSE), -1));
+	    break;
+	case PROPERTY_TYPE_PLANE:
+	    DBSrPaintArea(PlaneGetHint(proprec->prop_value.prop_plane),
+			proprec->prop_value.prop_plane,
+			&TiPlaneRect, &CIFSolidBits, printPlanePropFunc,
+			(ClientData)lobj);
+	    break;
+	case PROPERTY_TYPE_DOUBLE:
+	    for (i = 0; i < proprec->prop_len; i++)
+    	        Tcl_ListObjAppendElement(magicinterp, lobj,
+			Tcl_NewWideIntObj(proprec->prop_value.prop_double[i]));
+	    break;
     }
-    else
-    {
-	keyvalue = (char *)mallocMagic(strlen(name) + strlen((const char *)value) + 2);
-	sprintf(keyvalue, "%s %s", name, (const char *)value);
-    }
-    Tcl_AppendElement(magicinterp, keyvalue);
-    freeMagic(keyvalue);
+    Tcl_ListObjAppendElement(magicinterp, tobj, lobj);
+    Tcl_SetObjResult(magicinterp, tobj);
 
 #else
-    TxPrintf("%s = %s\n", name, (const char *)value);
+    switch (proprec->prop_type)
+    {
+	case PROPERTY_TYPE_STRING:
+	    TxPrintf("%s = %s\n", name, (const char *)proprec->prop_value.prop_string);
+	    break;
+	case PROPERTY_TYPE_INTEGER:
+	    TxPrintf("%s = ", name);
+	    for (i = 0; i < proprec->prop_len; i++)
+		TxPrintf("%d ", proprec->prop_value.prop_integer[i]);
+	    TxPrintf("\n");
+	    break;
+	case PROPERTY_TYPE_DIMENSION:
+	    TxPrintf("%s = ", name);
+	    for (i = 0; i < proprec->prop_len; i++)
+		TxPrintf("%s ", DBWPrintValue(proprec->prop_value.prop_integer[i],
+			w, ((i % 2) == 0) ? TRUE : FALSE));
+	    TxPrintf("\n");
+	    break;
+	case PROPERTY_TYPE_PLANE:
+    	    TxPrintf("%s = ", name);
+	    DBSrPaintArea((Tile *)NULL, proprec->prop_value.prop_plane,
+			&TiPlaneRect, &CIFSolidBits, printPlanePropFunc,
+			(ClientData)NULL);
+    	    TxPrintf("\n");
+	    break;
+	case PROPERTY_TYPE_DOUBLE:
+	    TxPrintf("%s = ", name);
+	    for (i = 0; i < proprec->prop_len; i++)
+		TxPrintf("%"DLONG_PREFIX"d ", proprec->prop_value.prop_double[i]);
+	    TxPrintf("\n");
+	    break;
+    }
 #endif
 
     return 0;	/* keep the search alive */

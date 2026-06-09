@@ -29,30 +29,37 @@ static char rcsid[] __attribute__ ((unused)) = "$Header: /usr/cvsroot/magic-8.0/
 /*
  *-------------------------------------------------------------------------
  *
- * ResNewSDDevice -- called when a device is reached via a piece of
- *			 diffusion. (Devices  reached via poly, i.e.
- *			 gates, are handled by ResEachTile.)
+ * ResNewTermDevice --
  *
- * Results:none
+ *	Called when a device is reached via a type in the device's
+ *	terminal type list (e.g., diffusion, for MOSFETs).  Note that
+ *	devices reached by the device type (e.g., poly, for MOSFETs)
+ *	are handled by ResEachTile.
  *
- * Side Effects: determines to which terminal (source or drain) node
- * is connected. Makes new node if node hasn't already been created .
- * Allocates breakpoint in current tile for device.
+ * Results:
+ *	None
+ *
+ * Side Effects:
+ *	Determines to which terminal (source or drain) node is connected.
+ *	Makes new node if node hasn't already been created.  Allocates
+ *	breakpoint in current tile for device.
  *
  *-------------------------------------------------------------------------
  */
 
 void
-ResNewSDDevice(tile, tp, xj, yj, direction, PendingList)
+ResNewTermDevice(tile, tp, n, xj, yj, direction, PendingList)
     Tile 	*tile, *tp;
-    int 	xj, yj, direction;
+    int 	n;			/* Terminal index */
+    int		xj, yj;			/* Location of connection */
+    int		direction;		/* Direction of current */
     resNode	**PendingList;
 {
-    resNode	*resptr;
+    resNode	*resptr = NULL;
     resDevice	*resDev;
     tElement	*tcell;
     int		newnode;
-    tileJunk	*j;
+    resInfo	*ri;
 
     newnode = FALSE;
 
@@ -62,44 +69,53 @@ ResNewSDDevice(tile, tp, xj, yj, direction, PendingList)
      */
     if (TiGetClient(tp) == CLIENTDEFAULT) return;
 
-    j = (tileJunk *) TiGetClientPTR(tp);
-    resDev = j->deviceList;
-    if ((j->sourceEdge & direction) != 0)
+    ri = (resInfo *) TiGetClientPTR(tp);
+    resDev = ri->deviceList;
+    if (resDev == NULL) return;			/* Shouldn't happen? */
+
+    /* Set the terminal indicated (source or drain).  If the terminal
+     * indicated is already set, then create a new breakpoint on the
+     * terminal.  However, to handle cases where a device may have
+     * source and drain tied to the same net, if there is an existing
+     * entry and the edge direction is opposite of "direction", then
+     * create a new terminal on the other side (i.e., permute source
+     * and drain).
+     */
+ 
+    if (resDev->rd_terminals[2 + n] == (resNode *)NULL)
     {
-	if (resDev->rd_fet_source == (resNode *) NULL)
-	{
-	    resptr = (resNode *) mallocMagic((unsigned)(sizeof(resNode)));
-	    newnode = TRUE;
-	    resDev->rd_fet_source = resptr;
-	}
-	else
-	{
-	    resptr = resDev->rd_fet_source;
-	}
+	resptr = (resNode *) mallocMagic((unsigned)(sizeof(resNode)));
+	newnode = TRUE;
+	resDev->rd_terminals[2 + n] = resptr;
     }
-    else
+    else if (((ri->sourceEdge & direction) != 0) || (resDev->rd_nterms < 4))
     {
-	if (resDev->rd_fet_drain == (resNode *) NULL)
-	{
-	    resptr = (resNode *) mallocMagic((unsigned)(sizeof(resNode)));
-	    newnode = TRUE;
-	    resDev->rd_fet_drain = resptr;
-	}
-	else
-	{
-	    resptr = resDev->rd_fet_drain;
-	}
+	resptr = resDev->rd_terminals[2 + n];
     }
+    else if ((n == 0) && (resDev->rd_terminals[3] == (resNode *)NULL))
+    {
+	resptr = (resNode *) mallocMagic((unsigned)(sizeof(resNode)));
+	newnode = TRUE;
+	resDev->rd_terminals[3] = resptr;
+    }
+    else if ((n == 1) && (resDev->rd_terminals[2] == (resNode *)NULL))
+    {
+	resptr = (resNode *) mallocMagic((unsigned)(sizeof(resNode)));
+	newnode = TRUE;
+	resDev->rd_terminals[2] = resptr;
+    }
+
     if (newnode)
     {
 	tcell = (tElement *) mallocMagic((unsigned)(sizeof(tElement)));
 	tcell->te_nextt = NULL;
-	tcell->te_thist = j->deviceList;
-	InitializeNode(resptr, xj, yj, RES_NODE_DEVICE);
+	tcell->te_thist = ri->deviceList;
+	InitializeResNode(resptr, xj, yj, RES_NODE_DEVICE);
 	resptr->rn_te = tcell;
 	ResAddToQueue(resptr, PendingList);
     }
-    NEWBREAK(resptr, tile, xj, yj, NULL);
+    if (resptr != NULL)
+	ResNewBreak(resptr, tile, xj, yj, NULL);
 }
 
 /*
@@ -125,37 +141,33 @@ ResNewSubDevice(tile, tp, xj, yj, direction, PendingList)
     resDevice	*resDev;
     tElement	*tcell;
     int		newnode;
-    tileJunk	*j;
+    resInfo	*ri;
 
     newnode = FALSE;
-    j = (tileJunk *) TiGetClientPTR(tp);
-    resDev = j->deviceList;
+    ri = (resInfo *) TiGetClientPTR(tp);
+    resDev = ri->deviceList;
 
-    /* Arrived at a device that has a terminal connected to substrate	*/
-    /* that is not a FET bulk terminal (e.g., varactor, diode).		*/
-    if (resDev->rd_nterms < 4) return;
+    if (resDev == NULL) return;		/* Should not happen? */
 
-    if (resDev->rd_fet_subs == (resNode *) NULL)
+    if (resDev->rd_fet_subs == (resNode *)NULL)
     {
-	    resptr = (resNode *) mallocMagic((unsigned)(sizeof(resNode)));
-	    newnode = TRUE;
-	    resDev->rd_fet_subs = resptr;
+	resptr = (resNode *) mallocMagic((unsigned)(sizeof(resNode)));
+	newnode = TRUE;
+	resDev->rd_fet_subs = resptr;
     }
     else
-    {
-	    resptr = resDev->rd_fet_subs;
-    }
+	resptr = resDev->rd_fet_subs;
 
     if (newnode)
     {
 	tcell = (tElement *) mallocMagic((unsigned)(sizeof(tElement)));
 	tcell->te_nextt = NULL;
-	tcell->te_thist = j->deviceList;
-	InitializeNode(resptr, xj, yj, RES_NODE_DEVICE);
+	tcell->te_thist = ri->deviceList;
+	InitializeResNode(resptr, xj, yj, RES_NODE_DEVICE);
 	resptr->rn_te = tcell;
 	ResAddToQueue(resptr, PendingList);
     }
-    NEWBREAK(resptr, tile, xj, yj, NULL);
+    ResNewBreak(resptr, tile, xj, yj, NULL);
 }
 
 /*
@@ -181,8 +193,8 @@ ResProcessJunction(tile, tp, xj, yj, NodeList)
     ResJunction *junction;
     resNode	*resptr;
     jElement    *jcell;
-    tileJunk	*j0 = (tileJunk *)TiGetClientPTR(tile);
-    tileJunk	*j2 = (tileJunk *)TiGetClientPTR(tp);
+    resInfo	*ri0 = (resInfo *)TiGetClientPTR(tile);
+    resInfo	*ri2 = (resInfo *)TiGetClientPTR(tp);
 
 #ifdef PARANOID
     if (tile == tp)
@@ -191,12 +203,12 @@ ResProcessJunction(tile, tp, xj, yj, NodeList)
 	return;
     }
 #endif
-    if (j2->tj_status & RES_TILE_DONE) return;
+    if (ri2->ri_status & RES_TILE_DONE) return;
     resptr = (resNode *) mallocMagic((unsigned)(sizeof(resNode)));
     resptr->rn_te = (tElement *) NULL;
     junction = (ResJunction *) mallocMagic((unsigned)(sizeof(ResJunction)));
     jcell = (jElement *) mallocMagic((unsigned)(sizeof(jElement)));
-    InitializeNode(resptr, xj, yj, RES_NODE_JUNCTION);
+    InitializeResNode(resptr, xj, yj, RES_NODE_JUNCTION);
     resptr->rn_je = jcell;
     ResAddToQueue(resptr, NodeList);
 
@@ -208,15 +220,15 @@ ResProcessJunction(tile, tp, xj, yj, NodeList)
     junction->rj_Tile[1] = tp;
     junction->rj_loc.p_x =xj;
     junction->rj_loc.p_y =yj;
-    junction->rj_nextjunction[0] = j0->junctionList;
-    j0->junctionList = junction;
-    junction->rj_nextjunction[1] = j2->junctionList;
-    j2->junctionList = junction;
+    junction->rj_nextjunction[0] = ri0->junctionList;
+    ri0->junctionList = junction;
+    junction->rj_nextjunction[1] = ri2->junctionList;
+    ri2->junctionList = junction;
 
-    NEWBREAK(junction->rj_jnode,tile, junction->rj_loc.p_x, 
+    ResNewBreak(junction->rj_jnode, tile, junction->rj_loc.p_x, 
 		    junction->rj_loc.p_y, NULL);
 
-    NEWBREAK(junction->rj_jnode,tp, junction->rj_loc.p_x,
+    ResNewBreak(junction->rj_jnode, tp, junction->rj_loc.p_x,
 		    junction->rj_loc.p_y, NULL);
 
 }
